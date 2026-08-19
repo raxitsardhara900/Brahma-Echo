@@ -5,6 +5,7 @@ import time
 import subprocess
 import platform
 import shutil
+import re
 
 try:
     import psutil
@@ -43,13 +44,87 @@ _APP_ALIASES = {
     "powershell":         {"Windows": "powershell.exe",         "Darwin": "Terminal",            "Linux": "bash"},
     "edge":               {"Windows": "msedge",                 "Darwin": "Microsoft Edge",      "Linux": "microsoft-edge"},
     "brave":              {"Windows": "brave",                  "Darwin": "Brave Browser",       "Linux": "brave-browser"},
-    "obsidian":           {"Windows": "Obsidian",               "Darwin": "Obsidian",            "Linux": "obsidian"},
+    "obsidian":           {"Windows": "Obsidian",               "Darwin": "Obsidian",             "Linux": "obsidian"},
     "notion":             {"Windows": "Notion",                 "Darwin": "Notion",              "Linux": "notion"},
     "blender":            {"Windows": "blender",                "Darwin": "Blender",             "Linux": "blender"},
     "capcut":             {"Windows": "CapCut",                 "Darwin": "CapCut",              "Linux": "capcut"},
     "postman":            {"Windows": "Postman",                "Darwin": "Postman",             "Linux": "postman"},
     "figma":              {"Windows": "Figma",                  "Darwin": "Figma",               "Linux": "figma"},
 }
+
+# Website names belong to the shared browser controller, not the OS app launcher.
+# This keeps "Open YouTube" and the following click/type/press commands in the
+# same browser session instead of opening a second unrelated browser window.
+_WEBSITE_URLS = {
+    "youtube": "https://www.youtube.com",
+    "youtube.com": "https://www.youtube.com",
+    "google": "https://www.google.com",
+    "google.com": "https://www.google.com",
+    "gmail": "https://mail.google.com",
+    "gmail.com": "https://mail.google.com",
+    "openai": "https://openai.com",
+    "openai.com": "https://openai.com",
+    "chatgpt": "https://chatgpt.com",
+    "chatgpt.com": "https://chatgpt.com",
+    "github": "https://github.com",
+    "github.com": "https://github.com",
+    "openrouter": "https://openrouter.ai",
+    "openrouter.ai": "https://openrouter.ai",
+    "instagram": "https://www.instagram.com",
+    "instagram.com": "https://www.instagram.com",
+    "facebook": "https://www.facebook.com",
+    "facebook.com": "https://www.facebook.com",
+    "linkedin": "https://www.linkedin.com",
+    "linkedin.com": "https://www.linkedin.com",
+    "reddit": "https://www.reddit.com",
+    "reddit.com": "https://www.reddit.com",
+    "amazon": "https://www.amazon.in",
+    "amazon.in": "https://www.amazon.in",
+    "flipkart": "https://www.flipkart.com",
+    "flipkart.com": "https://www.flipkart.com",
+    "x": "https://x.com",
+    "twitter": "https://x.com",
+    "twitter.com": "https://x.com",
+}
+
+
+def _looks_like_url(value: str) -> bool:
+    value = str(value or "").strip()
+    if not value:
+        return False
+    if value.startswith(("http://", "https://")):
+        return True
+    # A plain domain such as example.com should also be treated as a website.
+    return bool(re.fullmatch(r"[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/.*)?", value))
+
+
+def _website_url(raw: str) -> str | None:
+    key = str(raw or "").strip().lower()
+    if not key:
+        return None
+    if key in _WEBSITE_URLS:
+        return _WEBSITE_URLS[key]
+    if _looks_like_url(key):
+        return key if key.startswith(("http://", "https://")) else "https://" + key
+    return None
+
+
+def _open_in_shared_browser(raw: str, player=None) -> str | None:
+    url = _website_url(raw)
+    if not url:
+        return None
+    try:
+        from actions.browser_control import browser_control
+        result = browser_control(
+            parameters={"action": "go_to", "url": url},
+            response=None,
+            player=player,
+            session_memory=None,
+        )
+        return result or f"Opened {raw} in the default browser."
+    except Exception as exc:
+        print(f"[open_app] Browser routing failed for {raw}: {exc}")
+        return None
 
 
 def _normalize(raw: str) -> str:
@@ -95,6 +170,7 @@ def _launch_windows(app_name: str) -> bool:
         print(f"[open_app] ⚠️ Windows launch failed: {e}")
         return False
 
+
 def _launch_macos(app_name: str) -> bool:
     try:
         result = subprocess.run(["open", "-a", app_name], capture_output=True, timeout=8)
@@ -124,7 +200,6 @@ def _launch_macos(app_name: str) -> bool:
     except Exception as e:
         print(f"[open_app] ⚠️ macOS Spotlight failed: {e}")
         return False
-
 
 
 def _launch_linux(app_name: str) -> bool:
@@ -174,6 +249,16 @@ def open_app(
 
     if not app_name:
         return "Please specify which application to open, sir."
+
+    # Website names/URLs are intentionally routed into the shared browser
+    # controller. This prevents the next browser-control command from opening
+    # a different Playwright browser session.
+    browser_result = _open_in_shared_browser(app_name, player=player)
+    if browser_result is not None:
+        print(f"[open_app] 🌐 Website routed to shared browser: {app_name}")
+        if player:
+            player.write_log(f"[open_app] browser: {app_name}")
+        return browser_result
 
     system   = platform.system()
     launcher = _OS_LAUNCHERS.get(system)

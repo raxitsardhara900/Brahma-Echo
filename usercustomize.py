@@ -8,6 +8,7 @@ hooks have loaded, then add only small argument/command normalisation around it.
 from __future__ import annotations
 
 import importlib
+import os
 import re
 from typing import Any
 
@@ -100,17 +101,47 @@ def _looks_like_web_element(parameters: dict[str, Any]) -> bool:
 
 
 def _restore_real_browser_controller():
-    """Undo sitecustomize's system-browser shim for browser_control only.
-
-    The real browser controller already detects the OS default browser and
-    keeps a persistent Playwright page/session for later click/type/press calls.
-    """
+    """Undo sitecustomize's system-browser shim for browser_control only."""
     try:
         import actions.browser_control as module
-        module = importlib.reload(module)
-        return module
+        return importlib.reload(module)
     except Exception as exc:
         print(f"[BrowserBridge] Could not restore browser controller: {exc}")
+        return None
+
+
+def _pinchtab_result(parameters, response, player, session_memory):
+    """Use PinchTab only when explicitly selected by BRAHMA_BROWSER_BACKEND."""
+    try:
+        from actions import pinchtab_client as pt
+        action = str(parameters.get("action") or "").strip().lower()
+
+        supported = {
+            "go_to", "navigate", "tabs", "list_tabs", "snapshot", "get_text",
+            "click", "fill", "press", "screenshot", "server_start", "health"
+        }
+        if action not in supported:
+            return None
+
+        # PinchTab's click/fill API needs a tab id/ref or selector. Natural-language
+        # descriptions are handled by the normal browser controller instead.
+        if action == "click" and not (parameters.get("tab_id") or parameters.get("tabId")):
+            return None
+        if action == "fill" and not (parameters.get("tab_id") or parameters.get("tabId")):
+            return None
+
+        result = pt.browser_control(parameters)
+        if player:
+            player.write_log(f"[PinchTab] {action}")
+        else:
+            print(f"[PinchTab] {action}")
+        return result
+    except Exception as exc:
+        msg = f"[PinchTab] {action} unavailable: {exc}; using normal browser controller."
+        if player:
+            player.write_log(msg)
+        else:
+            print(msg)
         return None
 
 
@@ -178,7 +209,13 @@ def _patch_browser_control() -> None:
         }:
             _BROWSER_ACTIVE = True
 
-        # Normalise natural browser instructions into the real controller.
+        # Explicit PinchTab mode is preserved, but normal natural-language
+        # interaction remains on the same persistent browser session.
+        if os.environ.get("BRAHMA_BROWSER_BACKEND", "system").strip().lower() == "pinchtab":
+            result = _pinchtab_result(params, response, player, session_memory)
+            if result is not None:
+                return result
+
         if action == "click" and not params.get("selector") and not params.get("text"):
             if params.get("description"):
                 params["action"] = "smart_click"

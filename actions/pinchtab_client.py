@@ -161,16 +161,32 @@ def tabs() -> list[dict[str, Any]]:
     return data.get("tabs", []) if isinstance(data, dict) else []
 
 
+def _resolve_tab_id(tab_id: str | None = None) -> str:
+    explicit = str(tab_id or "").strip()
+    if explicit:
+        return explicit
+
+    current_tabs = tabs()
+    active = [t for t in current_tabs if str(t.get("status", "")).lower() == "active"]
+    if active:
+        return str(active[0].get("id"))
+    if current_tabs:
+        return str(current_tabs[0].get("id"))
+    raise RuntimeError("PinchTab has no browser tabs. Open a page before performing browser interaction.")
+
+
 def snapshot(tab_id: str | None = None, interactive: bool = True, compact: bool = True) -> Any:
     _ensure_server()
-    path = "/snapshot" if not tab_id else f"/tabs/{tab_id}/snapshot"
+    resolved_tab = _resolve_tab_id(tab_id) if tab_id else None
+    path = "/snapshot" if not resolved_tab else f"/tabs/{resolved_tab}/snapshot"
     params = {"interactive": str(interactive).lower(), "compact": str(compact).lower()}
     return _request_json("GET", path, params=params)
 
 
 def text(tab_id: str | None = None, mode: str = "readability") -> str:
     _ensure_server()
-    path = "/text" if not tab_id else f"/tabs/{tab_id}/text"
+    resolved_tab = _resolve_tab_id(tab_id) if tab_id else None
+    path = "/text" if not resolved_tab else f"/tabs/{resolved_tab}/text"
     data = _request_json("GET", path, params={"mode": mode})
     if isinstance(data, dict):
         return str(data.get("text", json.dumps(data, ensure_ascii=False)))
@@ -179,8 +195,9 @@ def text(tab_id: str | None = None, mode: str = "readability") -> str:
 
 def action(tab_id: str, kind: str, **params: Any) -> Any:
     _ensure_server()
+    resolved_tab = _resolve_tab_id(tab_id)
     payload = {"kind": kind, **params}
-    return _request_json("POST", f"/tabs/{tab_id}/action", json=payload)
+    return _request_json("POST", f"/tabs/{resolved_tab}/action", json=payload)
 
 
 def click(tab_id: str, ref: str) -> Any:
@@ -199,7 +216,8 @@ def press(tab_id: str, key: str) -> Any:
 
 def screenshot(tab_id: str | None = None, output: Path | None = None) -> bytes:
     _ensure_server()
-    path = "/screenshot" if not tab_id else f"/tabs/{tab_id}/screenshot"
+    resolved_tab = _resolve_tab_id(tab_id) if tab_id else None
+    path = "/screenshot" if not resolved_tab else f"/tabs/{resolved_tab}/screenshot"
     r = _request("GET", path, params={"raw": "true"})
     if r.status_code == 401:
         _refresh_token()
@@ -221,36 +239,67 @@ def _node_values(node: dict[str, Any]) -> str:
     return " ".join(str(v) for v in values if v).lower()
 
 
-def _find_ref(tab_id: str, description: str) -> tuple[str | None, dict[str, Any] | None]:
-    snap = snapshot(tab_id, interactive=True, compact=False)
+def _node_is_editable(node: dict[str, Any]) -> bool:
+    role = str(node.get("role") or "").lower()
+    tag = str(node.get("tag") or "").lower()
+    return role in {
+        "textbox", "searchbox", "combobox", "spinbutton",
+    } or tag in {"input", "textarea"}
+
+
+def _find_ref(tab_id: str, description: str, editable_only: bool = False) -> tuple[str | None, dict[str, Any] | None]:
+    resolved_tab = _resolve_tab_id(tab_id)
+    snap = snapshot(resolved_tab, interactive=True, compact=False)
     nodes = snap.get("nodes", []) if isinstance(snap, dict) else []
     query = str(description or "").strip().lower()
     if not query:
         return None, None
 
-    # Prefer strong semantic role matches for common voice commands.
     candidates = []
     for node in nodes:
         ref = node.get("ref")
         if not ref:
             continue
+        editable = _node_is_editable(node)
+        if editable_only and not editable:
+            continue
+
         hay = _node_values(node)
         score = 0
+        role = str(node.get("role") or "").lower()
+        tag = str(node.get("tag") or "").lower()
+
         if query == str(node.get("name") or "").lower():
             score += 100
         if query == str(node.get("label") or "").lower():
             score += 90
         if query == str(node.get("placeholder") or "").lower():
-            score += 90
+            score += 95
         if query in hay:
             score += 60
+
         query_words = [w for w in query.split() if len(w) > 2]
         score += sum(10 for w in query_words if w in hay)
-        role = str(node.get("role") or "").lower()
-        if "search" in query and role in {"search", "searchbox", "combobox", "textbox"}:
-            score += 50
+
+        # Semantic role preference.
+        if editable:
+            score += 25
+        if "search" in query:
+            if role in {"searchbox", "textbox", "combobox"}:
+                score += 80
+            elif role == "search":
+                # A search landmark/container is useful for click, but should
+                # never outrank the actual editable search field for typing.
+                score += 10
+            if tag == "input":
+                score += 70
+        if "email" in query and ("email" in hay or "mail" in hay):
+            score += 60
+        if any(word in query for word in ("password", "passcode")) and role in {"textbox", "combobox"}:
+            score += 20
         if "button" in query and role == "button":
             score += 40
+
         if score:
             candidates.append((score, ref, node))
 
@@ -261,20 +310,22 @@ def _find_ref(tab_id: str, description: str) -> tuple[str | None, dict[str, Any]
     return None, None
 
 
-def smart_click(tab_id: str, description: str) -> Any:
-    ref, node = _find_ref(tab_id, description)
+def smart_click(tab_id: str | None, description: str) -> Any:
+    resolved_tab = _resolve_tab_id(tab_id)
+    ref, node = _find_ref(resolved_tab, description, editable_only=False)
     if not ref:
         raise RuntimeError(f"PinchTab could not find element: {description}")
-    result = click(tab_id, ref)
-    return {"target": node, "ref": ref, "result": result}
+    result = click(resolved_tab, ref)
+    return {"target": node, "ref": ref, "tabId": resolved_tab, "result": result}
 
 
-def smart_type(tab_id: str, description: str, text_value: str) -> Any:
-    ref, node = _find_ref(tab_id, description)
+def smart_type(tab_id: str | None, description: str, text_value: str) -> Any:
+    resolved_tab = _resolve_tab_id(tab_id)
+    ref, node = _find_ref(resolved_tab, description, editable_only=True)
     if not ref:
-        raise RuntimeError(f"PinchTab could not find input: {description}")
-    result = fill(tab_id, text_value=text_value, ref=ref)
-    return {"target": node, "ref": ref, "result": result}
+        raise RuntimeError(f"PinchTab could not find editable input: {description}")
+    result = fill(resolved_tab, text_value=text_value, ref=ref)
+    return {"target": node, "ref": ref, "tabId": resolved_tab, "result": result}
 
 
 def browser_control(parameters: dict[str, Any]) -> str:
@@ -292,18 +343,21 @@ def browser_control(parameters: dict[str, Any]) -> str:
     if action_name == "get_text":
         return text(tab_id)
     if action_name == "click":
-        return json.dumps(click(str(tab_id), str(parameters.get("ref", ""))), ensure_ascii=False)
+        resolved_tab = _resolve_tab_id(tab_id)
+        return json.dumps(click(resolved_tab, str(parameters.get("ref", ""))), ensure_ascii=False)
     if action_name == "fill":
+        resolved_tab = _resolve_tab_id(tab_id)
         return json.dumps(
-            fill(str(tab_id), parameters.get("selector"), str(parameters.get("text", "")), ref=parameters.get("ref")),
+            fill(resolved_tab, parameters.get("selector"), str(parameters.get("text", "")), ref=parameters.get("ref")),
             ensure_ascii=False,
         )
     if action_name == "smart_click":
-        return json.dumps(smart_click(str(tab_id), str(parameters.get("description", ""))), ensure_ascii=False)
+        return json.dumps(smart_click(tab_id, str(parameters.get("description", ""))), ensure_ascii=False)
     if action_name == "smart_type":
-        return json.dumps(smart_type(str(tab_id), str(parameters.get("description", "")), str(parameters.get("text", ""))), ensure_ascii=False)
+        return json.dumps(smart_type(tab_id, str(parameters.get("description", "")), str(parameters.get("text", ""))), ensure_ascii=False)
     if action_name == "press":
-        return json.dumps(press(str(tab_id), str(parameters.get("key", "Enter"))), ensure_ascii=False)
+        resolved_tab = _resolve_tab_id(tab_id)
+        return json.dumps(press(resolved_tab, str(parameters.get("key", "Enter"))), ensure_ascii=False)
     if action_name == "screenshot":
         out = parameters.get("output")
         screenshot(tab_id, Path(out) if out else None)

@@ -29,49 +29,36 @@ def _get_default_browser_id() -> str:
             prog_id = winreg.QueryValueEx(key, "ProgId")[0].lower()
             winreg.CloseKey(key)
             return prog_id
-
         elif system == "Darwin":
             result = subprocess.run(
-                ["defaults", "read",
-                 "com.apple.LaunchServices/com.apple.launchservices.secure",
-                 "LSHandlers"],
+                ["defaults", "read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers"],
                 capture_output=True, text=True, timeout=5
             )
             return result.stdout.lower()
-
         elif system == "Linux":
             result = subprocess.run(
                 ["xdg-settings", "get", "default-web-browser"],
                 capture_output=True, text=True, timeout=5
             )
             return result.stdout.lower()
-
     except Exception:
         pass
-
     return ""
 
 
 _BROWSER_BINARIES = {
     "Windows": {
-        "opera":   ["opera.exe"],
-        "brave":   ["brave.exe"],
-        "vivaldi": ["vivaldi.exe"],
-        "chrome":  ["chrome.exe"],
-        "firefox": ["firefox.exe"],
+        "opera": ["opera.exe"], "brave": ["brave.exe"], "vivaldi": ["vivaldi.exe"],
+        "chrome": ["chrome.exe"], "firefox": ["firefox.exe"],
     },
     "Darwin": {
-        "opera":   ["opera"],
-        "brave":   ["brave browser", "brave"],
-        "vivaldi": ["vivaldi"],
-        "chrome":  ["google chrome", "google-chrome"],
-        "firefox": ["firefox"],
+        "opera": ["opera"], "brave": ["brave browser", "brave"], "vivaldi": ["vivaldi"],
+        "chrome": ["google chrome", "google-chrome"], "firefox": ["firefox"],
     },
     "Linux": {
-        "opera":   ["opera", "opera-stable"],
-        "brave":   ["brave-browser", "brave"],
+        "opera": ["opera", "opera-stable"], "brave": ["brave-browser", "brave"],
         "vivaldi": ["vivaldi-stable", "vivaldi"],
-        "chrome":  ["google-chrome", "google-chrome-stable", "chromium-browser", "chromium"],
+        "chrome": ["google-chrome", "google-chrome-stable", "chromium-browser", "chromium"],
         "firefox": ["firefox"],
     },
 }
@@ -106,19 +93,14 @@ def _get_opera_executable() -> str | None:
 
 
 def _find_browser_executable(prog_id: str) -> tuple:
-    """Returns (engine_name, exe_path, channel, is_opera)."""
-    system  = platform.system()
+    system = platform.system()
     os_bins = _BROWSER_BINARIES.get(system, {})
-
     if any(x in prog_id for x in ["firefox", "mozilla"]):
         return "firefox", None, None, False
-
     if "safari" in prog_id:
         return "webkit", None, None, False
-
     if "edge" in prog_id:
         return "chromium", None, "msedge", False
-
     if "opera" in prog_id:
         exe = _get_opera_executable()
         if exe:
@@ -127,25 +109,17 @@ def _find_browser_executable(prog_id: str) -> tuple:
             path = shutil.which(binary)
             if path:
                 return "chromium", path, None, True
-
-    browser_patterns = {
-        "brave":   ["brave"],
-        "vivaldi": ["vivaldi"],
-        "chrome":  ["chrome"],
-    }
+    browser_patterns = {"brave": ["brave"], "vivaldi": ["vivaldi"], "chrome": ["chrome"]}
     for browser_name, patterns in browser_patterns.items():
         if not any(p in prog_id for p in patterns):
             continue
-        binaries = os_bins.get(browser_name, [])
-        for binary in binaries:
+        for binary in os_bins.get(browser_name, []):
             path = shutil.which(binary)
             if path:
                 _log(f"[Browser] Found {browser_name} at: {path}")
                 return "chromium", path, None, False
-
     if "chrome" in prog_id or not prog_id:
         return "chromium", None, "chrome", False
-
     return "chromium", None, None, False
 
 
@@ -232,7 +206,8 @@ class _BrowserThread:
         if self._context is None:
             self._context = await self._browser.new_context(viewport=None)
         page = await self._context.new_page()
-        self._pages.append(page)
+        if page not in self._pages:
+            self._pages.append(page)
         self._page = page
         if url:
             return await self._go_to(url)
@@ -269,6 +244,30 @@ class _BrowserThread:
             rows.append(f"{i}. {title or 'Untitled'} | {page.url or 'about:blank'}")
         return "\n".join(rows) if rows else "No open tabs."
 
+    async def _back(self) -> str:
+        page = await self._get_page()
+        try:
+            await page.go_back(wait_until="domcontentloaded", timeout=10000)
+            return f"Back: {page.url}"
+        except Exception as e:
+            return f"Back error: {e}"
+
+    async def _forward(self) -> str:
+        page = await self._get_page()
+        try:
+            await page.go_forward(wait_until="domcontentloaded", timeout=10000)
+            return f"Forward: {page.url}"
+        except Exception as e:
+            return f"Forward error: {e}"
+
+    async def _reload(self) -> str:
+        page = await self._get_page()
+        try:
+            await page.reload(wait_until="domcontentloaded", timeout=15000)
+            return f"Reloaded: {page.url}"
+        except Exception as e:
+            return f"Reload error: {e}"
+
     async def _go_to(self, url: str) -> str:
         if not url.startswith("http"):
             url = "https://" + url
@@ -288,7 +287,8 @@ class _BrowserThread:
             "bing": f"https://www.bing.com/search?q={quote_plus(query)}",
             "duckduckgo": f"https://duckduckgo.com/?q={quote_plus(query)}",
         }
-        return await self._go_to(engines.get(engine.lower(), engines["google"])
+        url = engines.get(engine.lower(), engines["google"])
+        return await self._go_to(url)
 
     async def _click(self, selector=None, text=None) -> str:
         page = await self._get_page()
@@ -296,7 +296,7 @@ class _BrowserThread:
             if text:
                 await page.get_by_text(text, exact=False).first.click(timeout=8000)
                 return f"Clicked: '{text}'"
-            if selector:
+            elif selector:
                 await page.click(selector, timeout=8000)
                 return f"Clicked: {selector}"
             return "No selector or text provided."
@@ -319,7 +319,8 @@ class _BrowserThread:
     async def _scroll(self, direction: str = "down", amount: int = 500) -> str:
         page = await self._get_page()
         try:
-            await page.mouse.wheel(0, amount if direction == "down" else -amount)
+            y = amount if direction == "down" else -amount
+            await page.mouse.wheel(0, y)
             return f"Scrolled {direction}."
         except Exception as e:
             return f"Scroll error: {e}"
@@ -369,12 +370,12 @@ class _BrowserThread:
                     return f"Clicked ({role}): '{description}'"
                 except Exception:
                     pass
-        for method in (
+        for func in (
             lambda: page.get_by_text(description, exact=False).first.click(timeout=5000),
             lambda: page.get_by_placeholder(description, exact=False).first.click(timeout=5000),
         ):
             try:
-                await method()
+                await func()
                 return f"Clicked: '{description}'"
             except Exception:
                 pass
@@ -422,9 +423,9 @@ def _ensure_started():
             _bt_started = True
 
 
-def _pinchtab_dispatch(parameters: dict) -> str | None:
-    backend = os.environ.get("BRAHMA_BROWSER_BACKEND", "system").strip().lower()
-    if backend != "pinchtab":
+def _dispatch_pinchtab(parameters: dict) -> str | None:
+    """Send semantic browser operations to PinchTab when explicitly selected."""
+    if os.environ.get("BRAHMA_BROWSER_BACKEND", "system").strip().lower() != "pinchtab":
         return None
     action = str((parameters or {}).get("action", "")).lower().strip()
     supported = {
@@ -444,8 +445,8 @@ def _pinchtab_dispatch(parameters: dict) -> str | None:
 
 
 def browser_control(parameters: dict, response=None, player=None, session_memory=None) -> str:
-    """Browser controller with PinchTab-first semantic automation when opted in."""
-    routed = _pinchtab_dispatch(parameters or {})
+    """Browser controller; PinchTab is primary only when BRAHMA_BROWSER_BACKEND=pinchtab."""
+    routed = _dispatch_pinchtab(parameters or {})
     if routed is not None:
         if player:
             player.write_log(f"[pinchtab] {routed[:60]}")
@@ -482,9 +483,11 @@ def browser_control(parameters: dict, response=None, player=None, session_memory
         elif action == "list_tabs":
             result = _bt.run(_bt._list_tabs())
         elif action == "back":
-            result = _bt.run(_bt._get_page()) and _bt.run(_bt._get_page().go_back())
+            result = _bt.run(_bt._back())
+        elif action == "forward":
+            result = _bt.run(_bt._forward())
         elif action in {"refresh", "reload"}:
-            result = _bt.run(_bt._get_page()) and _bt.run(_bt._get_page().reload())
+            result = _bt.run(_bt._reload())
         elif action == "close":
             result = _bt.run(_bt._close_browser())
         else:

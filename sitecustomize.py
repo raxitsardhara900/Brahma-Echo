@@ -1,8 +1,9 @@
 """Fast local routing for deterministic computer controls.
 
 This hook normalizes model-generated computer_settings actions before they reach
-legacy intent detection. It prevents retries for direct volume/brightness/window
-commands and guarantees exact Windows volume percentages via pycaw.
+legacy intent detection. It also routes supported browser actions through the
+PinchTab adapter first, with the existing browser_control implementation kept
+as the fallback.
 """
 from __future__ import annotations
 
@@ -31,14 +32,13 @@ def _set_windows_volume(percent: int) -> int:
     volume.SetMasterVolumeLevelScalar(percent / 100.0, None)
     actual = round(volume.GetMasterVolumeLevelScalar() * 100)
 
-    # Endpoints that quantize can land one point away. Retry the exact scalar.
     if actual != percent:
         volume.SetMasterVolumeLevelScalar(percent / 100.0, None)
         actual = round(volume.GetMasterVolumeLevelScalar() * 100)
     return actual
 
 
-def _install():
+def _install_computer_settings() -> None:
     try:
         import actions.computer_settings as cs
     except Exception:
@@ -138,4 +138,41 @@ def _install():
     cs.computer_settings = fast_computer_settings
 
 
-_install()
+def _install_pinchtab_browser_routing() -> None:
+    """Patch browser_control so supported actions prefer PinchTab at runtime."""
+    try:
+        import actions.browser_control as bc
+        from actions import pinchtab_client as pt
+    except Exception:
+        return
+
+    original = bc.browser_control
+    supported = {
+        "go_to", "navigate", "tabs", "list_tabs", "snapshot", "get_text",
+        "click", "fill", "press", "screenshot", "server_start", "health"
+    }
+
+    def routed_browser_control(parameters=None, response=None, player=None, session_memory=None):
+        params = dict(parameters or {})
+        action = str(params.get("action") or "").strip().lower()
+        if action in supported:
+            try:
+                result = pt.browser_control(params)
+                if player:
+                    player.write_log(f"[PinchTab] primary browser action: {action}")
+                else:
+                    print(f"[PinchTab] primary browser action: {action}")
+                return result
+            except Exception as exc:
+                msg = f"[PinchTab] unavailable for {action}: {exc}; using Playwright fallback."
+                if player:
+                    player.write_log(msg)
+                else:
+                    print(msg)
+        return original(params, response=response, player=player, session_memory=session_memory)
+
+    bc.browser_control = routed_browser_control
+
+
+_install_computer_settings()
+_install_pinchtab_browser_routing()

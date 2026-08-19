@@ -1,0 +1,7 @@
+{
+  "source": "JARVIS-AGI-main.zip",
+  "destination": "vendor/jarvis_agi",
+  "adapter": "actions/jarvis_agi_adapter.py",
+  "original_main_autostart": false,
+  "primary_runtime": "Brahma Echo"
+}

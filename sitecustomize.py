@@ -507,3 +507,75 @@ def _install_local_laptop_routing():
 
 _install_local_laptop_routing()
 
+# ============================================================
+# BRAHMA LAPTOP BRIGHTNESS BACKEND V3
+# Uses screen_brightness_control for the actual laptop display.
+# Falls back to existing WMI implementation if unavailable.
+# ============================================================
+
+def _install_sbc_brightness_backend():
+    global _windows_brightness_get
+    global _windows_brightness_set
+    global _windows_brightness_step
+
+    try:
+        import screen_brightness_control as sbc
+
+        def _sbc_brightness_get():
+            try:
+                value = sbc.get_brightness(display=0)
+
+                if isinstance(value, (list, tuple)):
+                    if not value:
+                        return None
+                    value = value[0]
+
+                return int(round(float(value)))
+            except Exception as exc:
+                print(f"[Brightness] SBC get failed: {exc}")
+                return None
+
+        def _sbc_brightness_set(percent):
+            percent = max(0, min(100, int(percent)))
+
+            result = sbc.set_brightness(
+                percent,
+                display=0
+            )
+
+            # Verify the actual laptop display value.
+            actual = _sbc_brightness_get()
+
+            if actual is None:
+                return percent
+
+            return actual
+
+        def _sbc_brightness_step(delta):
+            current = _sbc_brightness_get()
+
+            if current is None:
+                current = 50
+
+            target = max(
+                0,
+                min(100, current + int(delta))
+            )
+
+            return _sbc_brightness_set(target)
+
+        _windows_brightness_get = _sbc_brightness_get
+        _windows_brightness_set = _sbc_brightness_set
+        _windows_brightness_step = _sbc_brightness_step
+
+        print("[Brightness] SBC laptop backend ACTIVE.")
+        print("[Brightness] Target display: 0")
+
+    except Exception as exc:
+        print(
+            f"[Brightness] SBC unavailable, "
+            f"keeping WMI backend: {exc}"
+        )
+
+
+_install_sbc_brightness_backend()

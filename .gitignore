@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+config/api_keys.json
+playwright-report/
+test-results/

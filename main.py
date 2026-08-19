@@ -12,6 +12,9 @@ import traceback
 import os
 from pathlib import Path
 
+# Load deterministic runtime hooks before tool imports.
+import sitecustomize
+
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")

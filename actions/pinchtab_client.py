@@ -52,13 +52,21 @@ def _request(method: str, path: str, **kwargs: Any) -> requests.Response:
     return requests.request(method, PINCHTAB_URL + path, headers=_headers(), timeout=timeout, **kwargs)
 
 
-def health() -> dict[str, Any]:
-    r = _request("GET", "/health", timeout=5)
+def _request_json(method: str, path: str, **kwargs: Any) -> Any:
+    r = _request(method, path, **kwargs)
     if r.status_code == 401:
         _refresh_token()
-        r = _request("GET", "/health", timeout=5)
+        r = _request(method, path, **kwargs)
     r.raise_for_status()
-    return r.json()
+    try:
+        return r.json()
+    except ValueError:
+        return r.text
+
+
+def health() -> dict[str, Any]:
+    data = _request_json("GET", "/health", timeout=5)
+    return data if isinstance(data, dict) else {"result": data}
 
 
 def is_running() -> bool:
@@ -82,7 +90,9 @@ def start_server(wait_seconds: float = 15.0) -> None:
         pass
 
     if not PINCHTAB_BIN.exists():
-        raise FileNotFoundError(f"PinchTab binary not found at {PINCHTAB_BIN}. Run scripts\\setup_pinchtab.ps1 first.")
+        raise FileNotFoundError(
+            f"PinchTab binary not found at {PINCHTAB_BIN}. Run scripts\\setup_pinchtab.ps1 first."
+        )
 
     creationflags = 0
     if os.name == "nt":
@@ -129,76 +139,58 @@ def navigate(url: str, tab_id: str | None = None, new_tab: bool = False) -> dict
         payload["tabId"] = tab_id
     if new_tab:
         payload["newTab"] = True
-    r = _request("POST", "/navigate", json=payload)
-    if r.status_code == 401:
-        _refresh_token()
-        r = _request("POST", "/navigate", json=payload)
-    r.raise_for_status()
-    return r.json() if r.content else {}
+    data = _request_json("POST", "/navigate", json=payload)
+    return data if isinstance(data, dict) else {"result": data}
+
+
+def search(query: str, engine: str = "google", tab_id: str | None = None) -> dict[str, Any]:
+    from urllib.parse import quote_plus
+    engines = {
+        "google": f"https://www.google.com/search?q={quote_plus(query)}",
+        "bing": f"https://www.bing.com/search?q={quote_plus(query)}",
+        "duckduckgo": f"https://duckduckgo.com/?q={quote_plus(query)}",
+    }
+    return navigate(engines.get(engine.lower(), engines["google"]), tab_id=tab_id)
 
 
 def tabs() -> list[dict[str, Any]]:
     _ensure_server()
-    r = _request("GET", "/tabs")
-    if r.status_code == 401:
-        _refresh_token()
-        r = _request("GET", "/tabs")
-    r.raise_for_status()
-    data = r.json()
-    return data if isinstance(data, list) else data.get("tabs", [])
+    data = _request_json("GET", "/tabs")
+    if isinstance(data, list):
+        return data
+    return data.get("tabs", []) if isinstance(data, dict) else []
 
 
 def snapshot(tab_id: str | None = None, interactive: bool = True, compact: bool = True) -> Any:
     _ensure_server()
     path = "/snapshot" if not tab_id else f"/tabs/{tab_id}/snapshot"
     params = {"interactive": str(interactive).lower(), "compact": str(compact).lower()}
-    r = _request("GET", path, params=params)
-    if r.status_code == 401:
-        _refresh_token()
-        r = _request("GET", path, params=params)
-    r.raise_for_status()
-    try:
-        return r.json()
-    except ValueError:
-        return r.text
+    return _request_json("GET", path, params=params)
 
 
 def text(tab_id: str | None = None, mode: str = "readability") -> str:
     _ensure_server()
     path = "/text" if not tab_id else f"/tabs/{tab_id}/text"
-    r = _request("GET", path, params={"mode": mode})
-    if r.status_code == 401:
-        _refresh_token()
-        r = _request("GET", path, params={"mode": mode})
-    r.raise_for_status()
-    try:
-        data = r.json()
-        return data.get("text", json.dumps(data, ensure_ascii=False)) if isinstance(data, dict) else str(data)
-    except ValueError:
-        return r.text
+    data = _request_json("GET", path, params={"mode": mode})
+    if isinstance(data, dict):
+        return str(data.get("text", json.dumps(data, ensure_ascii=False)))
+    return str(data)
 
 
 def action(tab_id: str, kind: str, **params: Any) -> Any:
     _ensure_server()
     payload = {"kind": kind, **params}
-    path = f"/tabs/{tab_id}/action"
-    r = _request("POST", path, json=payload)
-    if r.status_code == 401:
-        _refresh_token()
-        r = _request("POST", path, json=payload)
-    r.raise_for_status()
-    try:
-        return r.json()
-    except ValueError:
-        return r.text
+    return _request_json("POST", f"/tabs/{tab_id}/action", json=payload)
 
 
 def click(tab_id: str, ref: str) -> Any:
     return action(tab_id, "click", ref=ref)
 
 
-def fill(tab_id: str, selector: str, text_value: str) -> Any:
-    return action(tab_id, "fill", selector=selector, text=text_value)
+def fill(tab_id: str, selector: str | None = None, text_value: str = "", ref: str | None = None) -> Any:
+    if ref:
+        return action(tab_id, "fill", ref=ref, text=text_value)
+    return action(tab_id, "fill", selector=selector or "", text=text_value)
 
 
 def press(tab_id: str, key: str) -> Any:
@@ -220,11 +212,79 @@ def screenshot(tab_id: str | None = None, output: Path | None = None) -> bytes:
     return data
 
 
+def _node_values(node: dict[str, Any]) -> str:
+    values = (
+        node.get("name"), node.get("label"), node.get("text"),
+        node.get("placeholder"), node.get("title"), node.get("value"),
+        node.get("role"), node.get("tag"),
+    )
+    return " ".join(str(v) for v in values if v).lower()
+
+
+def _find_ref(tab_id: str, description: str) -> tuple[str | None, dict[str, Any] | None]:
+    snap = snapshot(tab_id, interactive=True, compact=False)
+    nodes = snap.get("nodes", []) if isinstance(snap, dict) else []
+    query = str(description or "").strip().lower()
+    if not query:
+        return None, None
+
+    # Prefer strong semantic role matches for common voice commands.
+    candidates = []
+    for node in nodes:
+        ref = node.get("ref")
+        if not ref:
+            continue
+        hay = _node_values(node)
+        score = 0
+        if query == str(node.get("name") or "").lower():
+            score += 100
+        if query == str(node.get("label") or "").lower():
+            score += 90
+        if query == str(node.get("placeholder") or "").lower():
+            score += 90
+        if query in hay:
+            score += 60
+        query_words = [w for w in query.split() if len(w) > 2]
+        score += sum(10 for w in query_words if w in hay)
+        role = str(node.get("role") or "").lower()
+        if "search" in query and role in {"search", "searchbox", "combobox", "textbox"}:
+            score += 50
+        if "button" in query and role == "button":
+            score += 40
+        if score:
+            candidates.append((score, ref, node))
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    if candidates:
+        _, ref, node = candidates[0]
+        return ref, node
+    return None, None
+
+
+def smart_click(tab_id: str, description: str) -> Any:
+    ref, node = _find_ref(tab_id, description)
+    if not ref:
+        raise RuntimeError(f"PinchTab could not find element: {description}")
+    result = click(tab_id, ref)
+    return {"target": node, "ref": ref, "result": result}
+
+
+def smart_type(tab_id: str, description: str, text_value: str) -> Any:
+    ref, node = _find_ref(tab_id, description)
+    if not ref:
+        raise RuntimeError(f"PinchTab could not find input: {description}")
+    result = fill(tab_id, text_value=text_value, ref=ref)
+    return {"target": node, "ref": ref, "result": result}
+
+
 def browser_control(parameters: dict[str, Any]) -> str:
     action_name = str(parameters.get("action", "")).lower().strip()
     tab_id = parameters.get("tab_id") or parameters.get("tabId")
+
     if action_name in {"go_to", "navigate"}:
         return json.dumps(navigate(str(parameters.get("url", "")), tab_id=tab_id), ensure_ascii=False)
+    if action_name == "search":
+        return json.dumps(search(str(parameters.get("query", "")), str(parameters.get("engine", "google")), tab_id), ensure_ascii=False)
     if action_name in {"tabs", "list_tabs"}:
         return json.dumps(tabs(), ensure_ascii=False)
     if action_name == "snapshot":
@@ -234,7 +294,14 @@ def browser_control(parameters: dict[str, Any]) -> str:
     if action_name == "click":
         return json.dumps(click(str(tab_id), str(parameters.get("ref", ""))), ensure_ascii=False)
     if action_name == "fill":
-        return json.dumps(fill(str(tab_id), str(parameters.get("selector", "")), str(parameters.get("text", ""))), ensure_ascii=False)
+        return json.dumps(
+            fill(str(tab_id), parameters.get("selector"), str(parameters.get("text", "")), ref=parameters.get("ref")),
+            ensure_ascii=False,
+        )
+    if action_name == "smart_click":
+        return json.dumps(smart_click(str(tab_id), str(parameters.get("description", ""))), ensure_ascii=False)
+    if action_name == "smart_type":
+        return json.dumps(smart_type(str(tab_id), str(parameters.get("description", "")), str(parameters.get("text", ""))), ensure_ascii=False)
     if action_name == "press":
         return json.dumps(press(str(tab_id), str(parameters.get("key", "Enter"))), ensure_ascii=False)
     if action_name == "screenshot":

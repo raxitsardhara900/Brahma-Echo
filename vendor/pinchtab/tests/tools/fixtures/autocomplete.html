@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PinchTab Benchmark - Autocomplete</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    .autocomplete { position: relative; display: inline-block; width: 300px; }
+    #search-input {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    #search-input:focus { outline: 2px solid #2196f3; }
+    #suggestions {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      background: white;
+      border: 1px solid #ddd;
+      border-top: none;
+      border-radius: 0 0 4px 4px;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      max-height: 200px;
+      overflow-y: auto;
+      display: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    }
+    #suggestions.visible { display: block; }
+    #suggestions li {
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    #suggestions li:hover { background: #e3f2fd; }
+    #status { margin-top: 16px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <h1>Autocomplete Search — VERIFY_AUTOCOMPLETE_PAGE_70707</h1>
+
+  <p>Type in the search box to filter suggestions. Click a suggestion to
+  select it. Minimum 2 characters to trigger.</p>
+
+  <div class="autocomplete">
+    <input type="text" id="search-input" placeholder="Search languages..."
+           autocomplete="off" aria-autocomplete="list" aria-controls="suggestions" />
+    <ul id="suggestions" role="listbox"></ul>
+  </div>
+
+  <div id="status">AUTOCOMPLETE_STATUS=IDLE</div>
+
+  <script>
+    (function () {
+      var items = [
+        'JavaScript', 'TypeScript', 'Python', 'PyTorch',
+        'Ruby', 'Rust', 'Go', 'Java', 'Kotlin', 'Swift',
+        'C++', 'Haskell', 'Elixir', 'Scala'
+      ];
+      var input = document.getElementById('search-input');
+      var list = document.getElementById('suggestions');
+      var status = document.getElementById('status');
+
+      function render(matches) {
+        list.innerHTML = '';
+        if (matches.length === 0) {
+          list.classList.remove('visible');
+          status.textContent = 'SUGGESTIONS_VISIBLE_COUNT_0';
+          return;
+        }
+        matches.forEach(function (item) {
+          var li = document.createElement('li');
+          li.setAttribute('role', 'option');
+          li.setAttribute('data-value', item);
+          li.textContent = item;
+          li.addEventListener('click', function () {
+            input.value = item;
+            list.classList.remove('visible');
+            list.innerHTML = '';
+            status.textContent = 'AUTOCOMPLETE_SELECTED=' + item;
+          });
+          list.appendChild(li);
+        });
+        list.classList.add('visible');
+        status.textContent = 'SUGGESTIONS_VISIBLE_COUNT_' + matches.length;
+      }
+
+      input.addEventListener('input', function () {
+        var query = input.value.trim().toLowerCase();
+        if (query.length < 2) {
+          list.classList.remove('visible');
+          list.innerHTML = '';
+          status.textContent = 'AUTOCOMPLETE_STATUS=IDLE';
+          return;
+        }
+        var matches = items.filter(function (item) {
+          return item.toLowerCase().indexOf(query) !== -1;
+        });
+        render(matches);
+      });
+
+      document.addEventListener('click', function (e) {
+        if (!e.target.closest('.autocomplete')) {
+          list.classList.remove('visible');
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

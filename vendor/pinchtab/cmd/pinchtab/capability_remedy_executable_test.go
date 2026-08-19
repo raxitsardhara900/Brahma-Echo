@@ -1,0 +1,167 @@
+package main
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/pinchtab/pinchtab/internal/config"
+	"github.com/pinchtab/pinchtab/internal/httpx"
+	"github.com/pinchtab/pinchtab/internal/remedy"
+	"github.com/pinchtab/pinchtab/internal/routes"
+	"github.com/spf13/cobra"
+)
+
+// capabilitySettings are the config paths a capability refusal can name, derived
+// from the route catalogue. Clipboard is appended because it gates endpoints
+// without a catalogue entry, so nothing else would carry it here.
+func capabilitySettings(t *testing.T) []string {
+	t.Helper()
+
+	settings := []string{"security.allowClipboard"}
+	for capability := range routes.CapabilityEndpoints() {
+		meta, ok := routes.Meta(capability)
+		if !ok {
+			t.Errorf("capability %q gates endpoints but has no metadata", capability)
+			continue
+		}
+		settings = append(settings, meta.Setting)
+	}
+	if len(settings) < 2 {
+		t.Fatal("no capability settings found; this test would prove nothing")
+	}
+	return settings
+}
+
+// A remedy an agent cannot execute is not a remedy. This resolves each command in EVERY
+// declared remedy against the REAL command tree — the same rootCmd the binary runs — rather
+// than eyeballing the strings, because the failure mode being closed is a remedy that reads
+// plausibly and dead-ends when run.
+//
+// It walks remedy.Templates() rather than a list of producers, which is why it covers a
+// producer added after it was written: declaring a remedy anywhere in the binary's import
+// graph registers it, and this test links the whole binary. The guard started life covering
+// the capability refusal alone, and every other producer of the field was free to mean
+// something else; the population it walks is now the population that exists.
+func TestEveryDeclaredRemedyResolvesInTheCLI(t *testing.T) {
+	declared := remedy.Templates()
+	// The floor is a vacuity check, not a census: the producers are enumerated by the
+	// registry above. It must fail if linking stops pulling the producer packages in,
+	// because an empty walk passes for the wrong reason.
+	if len(declared) < 8 {
+		t.Fatalf("only %d remedies are declared in the whole binary (%v); the walk has lost the producer packages and would pass vacuously", len(declared), declared)
+	}
+	for _, line := range declared {
+		t.Run(line, func(t *testing.T) {
+			assertRemedyRuns(t, line)
+		})
+	}
+}
+
+// assertRemedyRuns is the check itself, separated so a test can show it RED against a line
+// the property forbids.
+func assertRemedyRuns(t *testing.T, line string) {
+	t.Helper()
+
+	segments := remedy.Segments(line)
+	if len(segments) == 0 {
+		t.Fatalf("remedy %q is not a shell command line", line)
+	}
+	for _, words := range segments {
+		if words[0] != "pinchtab" {
+			t.Errorf("remedy command %v does not invoke pinchtab", words)
+			continue
+		}
+
+		var args, flags []string
+		for _, word := range words[1:] {
+			if strings.HasPrefix(word, "-") {
+				flags = append(flags, word)
+				continue
+			}
+			args = append(args, word)
+		}
+
+		found, rest, err := rootCmd.Find(args)
+		if err != nil {
+			t.Errorf("remedy command %v does not resolve: %v", words, err)
+			continue
+		}
+		if !found.Runnable() || printsGroupHelp(found) {
+			t.Errorf("remedy command %v resolves to %q, which is a command group and only prints help when run",
+				words, found.CommandPath())
+			continue
+		}
+		if found.Args != nil {
+			if err := found.Args(found, rest); err != nil {
+				t.Errorf("remedy command %v resolves to %q but its arguments %v are rejected: %v",
+					words, found.CommandPath(), rest, err)
+			}
+		}
+		// A flag the resolved command does not define is the same dead end as a missing
+		// verb, and it is the likelier one: a remedy naming --wait-nav outlives a rename.
+		for _, flag := range flags {
+			name := strings.TrimLeft(flag, "-")
+			if found.Flags().Lookup(name) == nil && found.InheritedFlags().Lookup(name) == nil {
+				t.Errorf("remedy command %v names flag %q, which %q does not define", words, flag, found.CommandPath())
+			}
+		}
+	}
+}
+
+// printsGroupHelp reports whether the command's only action is the help the unknown-subcommand
+// guard installs on groups. Runnable() alone stopped answering this question when that guard
+// landed: every group is now runnable, and a remedy naming one still does nothing.
+func printsGroupHelp(cmd *cobra.Command) bool {
+	if cmd.Run != nil || cmd.RunE == nil {
+		return false
+	}
+	return reflect.ValueOf(cmd.RunE).Pointer() == reflect.ValueOf(printGroupHelp).Pointer()
+}
+
+// The guard has to be able to fail, and these are the shapes it must fail on: a verb that
+// does not exist, a group that does nothing when run, and a flag the command never defined.
+// Each is a remedy that reads plausibly and dead-ends when an agent runs it.
+func TestTheRemedyGuardRedsOnACommandThatCannotRun(t *testing.T) {
+	for _, line := range []string{
+		"pinchtab unclog",
+		"pinchtab config get security.allowedDomains && pinchtab unclog",
+		"pinchtab session",
+		"pinchtab back --wait-nav",
+	} {
+		fake := &testing.T{}
+		assertRemedyRuns(fake, line)
+		if !fake.Failed() {
+			t.Errorf("the guard accepts %q, so it would accept a remedy nobody can run", line)
+		}
+	}
+}
+
+// The other half of executable: `config set <path> true` is only real if the
+// config editor accepts that path. A setting present in the schema but missing
+// from the editor's field table dead-ends every message that cites it.
+func TestCapabilityRemedySettingsAreAcceptedByTheConfigEditor(t *testing.T) {
+	for _, setting := range capabilitySettings(t) {
+		fc := config.FileConfig{}
+		if err := config.SetConfigValue(&fc, setting, "true"); err != nil {
+			t.Errorf("the remedy tells the caller to run `pinchtab config set %s true`, which the editor rejects: %v", setting, err)
+		}
+	}
+}
+
+// The restart half must name a command that exists at that exact path. Finding it
+// through the tree rather than asserting the literal means a renamed or moved
+// verb reds here instead of shipping a remedy nobody can run.
+func TestCapabilityRemedyRestartCommandExists(t *testing.T) {
+	line, _ := httpx.DisabledEndpointDetails("security.allowCookies")["remedy"].(string)
+
+	const restart = "pinchtab server restart"
+	if !strings.Contains(line, restart) {
+		t.Fatalf("remedy = %q, want it to name %q", line, restart)
+	}
+	found, _, err := rootCmd.Find([]string{"server", "restart"})
+	if err != nil || found.CommandPath() != "pinchtab server restart" {
+		t.Fatalf("`%s` does not resolve to itself (got %q, err %v); the remedy names a command that no longer exists",
+			restart, found.CommandPath(), err)
+	}
+}

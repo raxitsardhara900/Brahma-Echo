@@ -1,0 +1,33 @@
+name: CI / Go
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'skills/**'
+      - 'plugin/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'skills/**'
+      - 'plugin/**'
+  workflow_dispatch:
+
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    uses: ./.github/workflows/reusable-go.yml
+    with:
+      ref: ${{ github.sha }}

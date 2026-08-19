@@ -1,0 +1,184 @@
+name: CI / E2E
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'skills/**'
+      - 'plugin/**'
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: 'Suite to run'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - api
+          - cli
+          - infra
+          - smoke
+
+
+jobs:
+  detect-changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      api_extended_touched: ${{ steps.changes.outputs.api_extended_touched }}
+      cli_extended_touched: ${{ steps.changes.outputs.cli_extended_touched }}
+      infra_extended_touched: ${{ steps.changes.outputs.infra_extended_touched }}
+      smoke_touched: ${{ steps.changes.outputs.smoke_touched }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Detect touched E2E files
+        id: changes
+        run: |
+          CHANGED=$(git diff --name-only origin/main...HEAD)
+
+          # Touching any non-basic, non-smoke scenario should trigger the matching
+          # extended suite in its native environment rather than trying to
+          # inject that file into the basic-stack PR jobs.
+          if echo "$CHANGED" | grep -E '^tests/e2e/scenarios/api/[^/]+\.sh$' | grep -Ev '(^|/)[^/]+-(basic|smoke)\.sh$' >/dev/null; then
+            echo "api_extended_touched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "api_extended_touched=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -E '^tests/e2e/scenarios/cli/[^/]+\.sh$' | grep -Ev '(^|/)[^/]+-(basic|smoke)\.sh$' >/dev/null; then
+            echo "cli_extended_touched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "cli_extended_touched=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -E '^tests/e2e/scenarios/infra/[^/]+\.sh$' | grep -Ev '(^|/)[^/]+-(basic|smoke)\.sh$' >/dev/null; then
+            echo "infra_extended_touched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "infra_extended_touched=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -E '^(tests/e2e/scenarios/[^/]+/[^/]+-smoke\.sh|scripts/docker-.*smoke\.sh|tests/tools/docker/chrome-cft-smoke\.Dockerfile|Dockerfile|\.dockerignore|\.github/workflows/(ci-smoke|reusable-smoke)\.yml)$' >/dev/null; then
+            echo "smoke_touched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "smoke_touched=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  api:
+    needs: [detect-changes]
+    if: >-
+      always() &&
+      (needs.detect-changes.result == 'success' || needs.detect-changes.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.suite == 'all' || inputs.suite == 'api')
+    uses: ./.github/workflows/reusable-e2e.yml
+    with:
+      ref: ${{ github.sha }}
+      suite: api
+      summary_title: E2E API Tests
+      timeout_minutes: 15
+
+  api-extended-pr:
+    needs: [detect-changes]
+    if: github.event_name == 'pull_request' && needs.detect-changes.outputs.api_extended_touched == 'true'
+    uses: ./.github/workflows/reusable-e2e.yml
+    with:
+      ref: ${{ github.sha }}
+      suite: api-extended
+      summary_title: E2E API Extended Tests (PR)
+      timeout_minutes: 20
+
+  cli:
+    needs: [detect-changes]
+    if: >-
+      always() &&
+      (needs.detect-changes.result == 'success' || needs.detect-changes.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.suite == 'all' || inputs.suite == 'cli')
+    uses: ./.github/workflows/reusable-e2e.yml
+    with:
+      ref: ${{ github.sha }}
+      suite: cli
+      summary_title: E2E CLI Tests
+      timeout_minutes: 15
+
+  cli-extended-pr:
+    needs: [detect-changes]
+    if: github.event_name == 'pull_request' && needs.detect-changes.outputs.cli_extended_touched == 'true'
+    uses: ./.github/workflows/reusable-e2e.yml
+    with:
+      ref: ${{ github.sha }}
+      suite: cli-extended
+      summary_title: E2E CLI Extended Tests (PR)
+      timeout_minutes: 20
+
+  infra:
+    needs: [detect-changes]
+    if: >-
+      always() &&
+      (needs.detect-changes.result == 'success' || needs.detect-changes.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.suite == 'all' || inputs.suite == 'infra')
+    uses: ./.github/workflows/reusable-e2e.yml
+    with:
+      ref: ${{ github.sha }}
+      suite: infra
+      summary_title: E2E Infra Tests
+      timeout_minutes: 15
+
+  infra-extended-pr:
+    needs: [detect-changes]
+    if: github.event_name == 'pull_request' && needs.detect-changes.outputs.infra_extended_touched == 'true'
+    uses: ./.github/workflows/reusable-e2e.yml
+    with:
+      ref: ${{ github.sha }}
+      suite: infra-extended
+      summary_title: E2E Infra Extended Tests (PR)
+      timeout_minutes: 25
+
+  smoke-pr:
+    needs: [detect-changes]
+    if: github.event_name == 'pull_request' && needs.detect-changes.outputs.smoke_touched == 'true'
+    uses: ./.github/workflows/reusable-smoke.yml
+    with:
+      ref: ${{ github.sha }}
+
+  # Extended suites for manual dispatch
+  api-extended:
+    if: github.event_name == 'workflow_dispatch' && (inputs.suite == 'all' || inputs.suite == 'api')
+    uses: ./.github/workflows/reusable-e2e.yml
+    with:
+      ref: ${{ github.sha }}
+      suite: api-extended
+      summary_title: E2E API Extended Tests
+      timeout_minutes: 20
+
+  cli-extended:
+    if: github.event_name == 'workflow_dispatch' && (inputs.suite == 'all' || inputs.suite == 'cli')
+    uses: ./.github/workflows/reusable-e2e.yml
+    with:
+      ref: ${{ github.sha }}
+      suite: cli-extended
+      summary_title: E2E CLI Extended Tests
+      timeout_minutes: 20
+
+  infra-extended:
+    if: github.event_name == 'workflow_dispatch' && (inputs.suite == 'all' || inputs.suite == 'infra')
+    uses: ./.github/workflows/reusable-e2e.yml
+    with:
+      ref: ${{ github.sha }}
+      suite: infra-extended
+      summary_title: E2E Infra Extended Tests
+      timeout_minutes: 25
+
+  smoke:
+    if: github.event_name == 'workflow_dispatch' && (inputs.suite == 'all' || inputs.suite == 'smoke')
+    uses: ./.github/workflows/reusable-smoke.yml
+    with:
+      ref: ${{ github.sha }}

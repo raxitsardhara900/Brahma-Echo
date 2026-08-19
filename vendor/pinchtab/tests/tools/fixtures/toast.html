@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PinchTab Benchmark - Toast Notifications</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    .actions { margin: 12px 0; }
+    .actions button {
+      margin-right: 8px;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      border: 1px solid #ccc;
+    }
+    #save-btn { background: #4caf50; color: white; border-color: #4caf50; }
+    #error-btn { background: #f44336; color: white; border-color: #f44336; }
+    #toast-container {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      z-index: 1000;
+    }
+    .toast {
+      padding: 12px 20px;
+      border-radius: 4px;
+      color: white;
+      font-weight: bold;
+      margin-top: 8px;
+    }
+    .toast.success { background: #4caf50; }
+    .toast.error { background: #f44336; }
+    #status { margin-top: 16px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <h1>Toast Notifications — VERIFY_TOAST_PAGE_80808</h1>
+
+  <p>Click a button to trigger a toast notification. Toasts auto-dismiss
+  after 3 seconds. The status area tracks the most recent event.</p>
+
+  <div class="actions">
+    <button id="save-btn">Save Changes</button>
+    <button id="error-btn">Trigger Error</button>
+  </div>
+
+  <div id="toast-container"></div>
+
+  <div id="status">TOAST_STATUS=IDLE TOAST_TOTAL=0</div>
+
+  <script>
+    (function () {
+      var container = document.getElementById('toast-container');
+      var status = document.getElementById('status');
+      var total = 0;
+
+      function showToast(message, type, duration) {
+        var toast = document.createElement('div');
+        toast.className = 'toast ' + type;
+        toast.textContent = message;
+        toast.setAttribute('role', 'alert');
+        container.appendChild(toast);
+        total++;
+        status.textContent = 'TOAST_VISIBLE=' + message + ' TOAST_TYPE=' + type.toUpperCase() + ' TOAST_TOTAL=' + total;
+
+        setTimeout(function () {
+          toast.remove();
+          if (container.children.length === 0) {
+            status.textContent = 'TOAST_DISMISSED TOAST_TOTAL=' + total;
+          }
+        }, duration || 3000);
+      }
+
+      document.getElementById('save-btn').addEventListener('click', function () {
+        showToast('TOAST_MESSAGE_SAVED_SUCCESSFULLY', 'success', 3000);
+      });
+
+      document.getElementById('error-btn').addEventListener('click', function () {
+        showToast('TOAST_MESSAGE_ERROR_FAILED', 'error', 3000);
+      });
+    })();
+  </script>
+</body>
+</html>

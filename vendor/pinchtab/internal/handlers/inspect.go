@@ -1,0 +1,299 @@
+package handlers
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/pinchtab/pinchtab/internal/bridge"
+	"github.com/pinchtab/pinchtab/internal/httpx"
+)
+
+type inspectResponse struct {
+	TabID     string         `json:"tabId,omitempty"`
+	FrameID   string         `json:"frameId,omitempty"`
+	URL       string         `json:"url,omitempty"`
+	Title     string         `json:"title,omitempty"`
+	HTML      string         `json:"html,omitempty"`
+	Styles    map[string]any `json:"styles,omitempty"`
+	Truncated bool           `json:"truncated,omitempty"`
+}
+
+type inspectPayload struct {
+	Title  string         `json:"title"`
+	URL    string         `json:"url"`
+	HTML   string         `json:"html,omitempty"`
+	Styles map[string]any `json:"styles,omitempty"`
+}
+
+type inspectKind string
+
+const (
+	inspectKindTitle  inspectKind = "title"
+	inspectKindURL    inspectKind = "url"
+	inspectKindHTML   inspectKind = "html"
+	inspectKindStyles inspectKind = "styles"
+)
+
+func (h *Handlers) HandleTitle(w http.ResponseWriter, r *http.Request) {
+	h.handleInspect(w, r, inspectKindTitle)
+}
+
+func (h *Handlers) HandleTabTitle(w http.ResponseWriter, r *http.Request) {
+	h.forwardInspectTabRoute(w, r, h.HandleTitle)
+}
+
+func (h *Handlers) HandleURL(w http.ResponseWriter, r *http.Request) {
+	h.handleInspect(w, r, inspectKindURL)
+}
+
+func (h *Handlers) HandleTabURL(w http.ResponseWriter, r *http.Request) {
+	h.forwardInspectTabRoute(w, r, h.HandleURL)
+}
+
+func (h *Handlers) HandleHTML(w http.ResponseWriter, r *http.Request) {
+	h.handleInspect(w, r, inspectKindHTML)
+}
+
+func (h *Handlers) HandleTabHTML(w http.ResponseWriter, r *http.Request) {
+	h.forwardInspectTabRoute(w, r, h.HandleHTML)
+}
+
+func (h *Handlers) HandleStyles(w http.ResponseWriter, r *http.Request) {
+	h.handleInspect(w, r, inspectKindStyles)
+}
+
+func (h *Handlers) HandleTabStyles(w http.ResponseWriter, r *http.Request) {
+	h.forwardInspectTabRoute(w, r, h.HandleStyles)
+}
+
+func (h *Handlers) handleInspect(w http.ResponseWriter, r *http.Request, kind inspectKind) {
+	tabID := r.URL.Query().Get("tabId")
+	h.recordReadRequest(r, string(kind), tabID)
+
+	if !h.ensureBrowserOrRespond(w, h.Config) {
+		return
+	}
+
+	resolvedTabID, tCtx, cancel, ok := h.resolveReadContext(w, r, tabID, h.Config.ActionTimeout)
+	if !ok {
+		return
+	}
+	defer h.armAutoCloseIfEnabled(resolvedTabID)
+	defer cancel()
+
+	targetFrameID := h.resolveTargetFrameID(r, resolvedTabID)
+
+	payload, err := h.inspectPayload(tCtx, resolvedTabID, targetFrameID, r.URL.Query().Get("selector"), r.URL.Query().Get("ref"), kind)
+	if err != nil {
+		httpx.Error(w, 500, err)
+		return
+	}
+
+	resp := inspectResponse{
+		TabID:   resolvedTabID,
+		FrameID: targetFrameID,
+		URL:     payload.URL,
+		Title:   payload.Title,
+	}
+	if kind == inspectKindHTML {
+		resp.HTML = payload.HTML
+		if maxChars := parsePositiveInt(r.URL.Query().Get("maxChars")); maxChars > 0 {
+			resp.HTML, resp.Truncated = truncateChars(resp.HTML, maxChars)
+		}
+	}
+	if kind == inspectKindStyles {
+		styles := payload.Styles
+		if prop := strings.TrimSpace(r.URL.Query().Get("prop")); prop != "" {
+			resp.Styles = map[string]any{prop: styles[prop]}
+		} else {
+			resp.Styles = sortCSSMap(styles)
+		}
+	}
+
+	h.recordResolvedURL(r, resp.URL)
+	httpx.JSON(w, 200, resp)
+}
+
+func (h *Handlers) inspectPayload(ctx context.Context, tabID, frameID, rawSelector, ref string, kind inspectKind) (inspectPayload, error) {
+	if ref != "" {
+		return h.inspectByRef(ctx, tabID, ref, kind)
+	}
+	if rawSelector != "" {
+		return h.inspectBySelector(ctx, tabID, rawSelector, frameID, kind)
+	}
+	return h.inspectDocument(ctx, frameID, kind)
+}
+
+func (h *Handlers) inspectDocument(ctx context.Context, frameID string, kind inspectKind) (inspectPayload, error) {
+	metaExpr := inspectDocumentExpression(kind)
+	var payload inspectPayload
+	if err := h.evalInspectExpression(ctx, frameID, metaExpr, &payload); err != nil {
+		return inspectPayload{}, fmt.Errorf("inspect %s: %w", kind, err)
+	}
+	return payload, nil
+}
+
+func inspectDocumentExpression(kind inspectKind) string {
+	switch kind {
+	case inspectKindStyles:
+		return `(() => {
+			const doc = document;
+			const win = doc.defaultView || window;
+			const root = doc.documentElement || doc.body;
+			const style = root ? win.getComputedStyle(root) : null;
+			const styles = {};
+			if (style) {
+				for (const name of style) styles[name] = style.getPropertyValue(name);
+			}
+			return {
+				title: doc.title || "",
+				url: String(doc.location ? doc.location.href : win.location.href),
+				styles
+			};
+		})()`
+	case inspectKindHTML:
+		return `(() => {
+			const doc = document;
+			const win = doc.defaultView || window;
+			return {
+				title: doc.title || "",
+				url: String(doc.location ? doc.location.href : win.location.href),
+				html: doc.documentElement ? doc.documentElement.outerHTML : ""
+			};
+		})()`
+	default:
+		// title / url: no outerHTML, no computed styles.
+		return `(() => {
+			const doc = document;
+			const win = doc.defaultView || window;
+			return {
+				title: doc.title || "",
+				url: String(doc.location ? doc.location.href : win.location.href)
+			};
+		})()`
+	}
+}
+
+func (h *Handlers) inspectByRef(ctx context.Context, tabID, ref string, kind inspectKind) (inspectPayload, error) {
+	cache := h.Bridge.GetRefCache(tabID)
+	if cache == nil {
+		return inspectPayload{}, fmt.Errorf("ref not found: %s (no snapshot cache)", ref)
+	}
+	target, ok := cache.Lookup(ref)
+	if !ok {
+		return inspectPayload{}, fmt.Errorf("ref not found: %s", ref)
+	}
+	return h.inspectByBackendNodeID(ctx, target.BackendNodeID, kind)
+}
+
+func (h *Handlers) inspectBySelector(ctx context.Context, tabID, rawSelector, frameID string, kind inspectKind) (inspectPayload, error) {
+	nodeID, err := h.resolveSelectorNodeIDInFrame(ctx, tabID, rawSelector, frameID)
+	if err != nil {
+		return inspectPayload{}, frameScopedSelectorError("selector", err)
+	}
+	return h.inspectByBackendNodeID(ctx, nodeID, kind)
+}
+
+func (h *Handlers) inspectByBackendNodeID(ctx context.Context, nodeID int64, kind inspectKind) (inspectPayload, error) {
+	var payload inspectPayload
+	if nodeID == 0 {
+		return payload, fmt.Errorf("element not found in DOM (backendNodeId=%d)", nodeID)
+	}
+
+	functionDeclaration := inspectFunctionDeclaration(kind)
+	if err := h.Bridge.CallFunctionOnNode(ctx, nodeID, functionDeclaration, nil, &payload); err != nil {
+		return inspectPayload{}, fmt.Errorf("inspect %s: %w", kind, err)
+	}
+	return payload, nil
+}
+
+func inspectFunctionDeclaration(kind inspectKind) string {
+	switch kind {
+	case inspectKindStyles:
+		return `function() {
+			const el = this;
+			const doc = el.ownerDocument || document;
+			const win = doc.defaultView || window;
+			const style = win.getComputedStyle(el);
+			const styles = {};
+			for (const name of style) styles[name] = style.getPropertyValue(name);
+			return {
+				title: doc.title || '',
+				url: String(doc.location ? doc.location.href : win.location.href),
+				styles,
+			};
+		}`
+	case inspectKindHTML:
+		return `function() {
+			const el = this;
+			const doc = el.ownerDocument || document;
+			const win = doc.defaultView || window;
+			return {
+				title: doc.title || '',
+				url: String(doc.location ? doc.location.href : win.location.href),
+				html: el.outerHTML || '',
+			};
+		}`
+	default:
+		// title / url: no outerHTML.
+		return `function() {
+			const el = this;
+			const doc = el.ownerDocument || document;
+			const win = doc.defaultView || window;
+			return {
+				title: doc.title || '',
+				url: String(doc.location ? doc.location.href : win.location.href),
+			};
+		}`
+	}
+}
+
+func (h *Handlers) evalInspectExpression(ctx context.Context, frameID, expr string, out any) error {
+	return h.Bridge.EvaluateInFrame(ctx, frameID, expr, out, bridge.EvalOpts{})
+}
+
+func parsePositiveInt(raw string) int {
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+func sortCSSMap(css map[string]any) map[string]any {
+	if css == nil {
+		return map[string]any{}
+	}
+	keys := make([]string, 0, len(css))
+	for k := range css {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make(map[string]any, len(css))
+	for _, k := range keys {
+		out[k] = css[k]
+	}
+	return out
+}
+
+func (h *Handlers) forwardInspectTabRoute(w http.ResponseWriter, r *http.Request, next func(http.ResponseWriter, *http.Request)) {
+	tabID := r.PathValue("id")
+	if tabID == "" {
+		httpx.Error(w, 400, fmt.Errorf("tab id required"))
+		return
+	}
+	q := r.URL.Query()
+	q.Set("tabId", tabID)
+	req := r.Clone(r.Context())
+	u := *r.URL
+	u.RawQuery = q.Encode()
+	req.URL = &u
+	next(w, req)
+}

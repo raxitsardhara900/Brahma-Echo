@@ -1,0 +1,69 @@
+name: Reusable / Plugin
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check Plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install plugin dependencies
+        working-directory: plugin
+        run: npm install --ignore-scripts --no-package-lock
+
+      - name: Verify JSON schemas
+        working-directory: plugin
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('package.json', 'utf8'))"
+          node -e "JSON.parse(require('fs').readFileSync('openclaw.plugin.json', 'utf8'))"
+          echo "✅ All JSON files are valid"
+
+      - name: Verify OpenClaw plugin API types
+        working-directory: plugin
+        run: npm run typecheck
+
+      - name: Verify package contents
+        working-directory: plugin
+        run: |
+          echo "📦 Package will contain:"
+          npm pack --dry-run 2>&1 | grep -E "^npm notice [0-9]" | awk '{print "  " $4 " (" $3 ")"}'
+
+      - name: Verify ClawHub package metadata
+        run: npx --yes clawhub@latest package publish ./plugin --family code-plugin --dry-run --json
+
+  test:
+    name: Test Plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install plugin dependencies
+        working-directory: plugin
+        run: npm install --ignore-scripts --no-package-lock
+
+      - name: Run tests
+        working-directory: plugin
+        run: npm test

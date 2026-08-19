@@ -5,3 +5,15 @@ __pycache__/
 config/api_keys.json
 playwright-report/
 test-results/
+# Runtime/private files
+config/.desktop_shortcut_created
+config/*.key
+config/*.sqlite3
+config/*.sqlite3-shm
+config/*.sqlite3-wal
+# Runtime/private files
+config/.desktop_shortcut_created
+config/*.key
+config/*.sqlite3
+config/*.sqlite3-shm
+config/*.sqlite3-wal

@@ -1,0 +1,242 @@
+# Log level for every `pinchtab server` service below: `--log-level debug`, named
+# here rather than inherited. A harness whose logs exist to explain a failing
+# scenario wants maximum detail, and log volume is cheap in a CI artifact. The
+# level is stated in this file because the previous spelling borrowed `--verbose`,
+# whose meaning changed elsewhere (it once meant "log at all", then came to mean
+# "debug"), and the level silently moved with it. `--log-level` wins over any
+# config file, so nothing under tests/e2e/config/ can override it.
+#
+# `--verbose` is kept alongside for the two things it alone puts in the artifact,
+# both gated on cfg.VerboseBanner in internal/server/server.go: the startup banner,
+# whose security line reads `security  ELEVATED`, and cli.LogSecurityWarnings — four
+# `category=security` WARN lines (sensitive_endpoints_enabled, non_loopback_bind,
+# idpi_warn_mode, attach_external_hosts with its `allowHosts` list) that vanish
+# entirely without the flag. The warnings are the diagnostic half; the attach
+# `allowHosts` list is the attach trust boundary, NOT the netguard allowed domains.
+# Nothing in the server log prints the netguard allowlist at any level — `Guard: UP`
+# and `Allowed domains:` come from cmd_wizard.go, the interactive setup wizard, and
+# never reach a `docker compose logs` capture.
+#
+# Both flags must stay, and the reason is a precedence detail worth stating exactly.
+# `--verbose` contributes ONLY the banner *while* `--log-level` is set: applyLogLevel
+# returns early on a non-empty level and never reaches its verbose branch. Remove
+# `--log-level` and `--verbose` governs the level again, setting debug on its own —
+# so the two are not orthogonal, the older coupling is masked by both being present.
+# Dropping `--log-level` would not change the level observed today, which is what
+# makes the trap quiet: it would silently hand the level back to a flag whose meaning
+# has already migrated once, which is the drift this file exists to prevent.
+#
+# The `pinchtab bridge` services run `--log-level debug` and NOT `--verbose`, and the
+# asymmetry with the servers is deliberate. Debug for the same reason the servers have
+# it, only more so: the bridge holds the CDP session, so target crashes, instance
+# lifecycle and selector resolution are logged there — the half a failing browser
+# scenario most needs explained. No `--verbose` because its sole contribution is the
+# startup banner and the bridge has none to print; `pinchtab bridge --help` says so.
+# Adding it would make the two rules look identical when they are not.
+x-pinchtab-base: &pinchtab-base
+  # All pinchtab variants share the same image — only the pinchtab service
+  # carries `build:` so compose builds it once. The 6 variants differ only
+  # by config file and command flags, supplied via volumes/env at runtime.
+  image: e2e-pinchtab:latest
+  pull_policy: never
+  shm_size: '2gb'
+
+x-pinchtab-healthcheck: &pinchtab-healthcheck
+  test: ["CMD-SHELL", "wget --header='Authorization: Bearer e2e-token' -q -O /dev/null http://localhost:9999/health"]
+  interval: 1s
+  timeout: 10s
+  retries: 30
+  start_period: 5s
+
+services:
+  pinchtab:
+    <<: *pinchtab-base
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment:
+      PINCHTAB_CONFIG: /data/e2e-config/pinchtab.json
+    volumes:
+      - ./config/pinchtab.json:/fixture-config/pinchtab.json:ro
+      - ./fixtures/test-extension:/extensions/test-extension
+      - ./fixtures/test-extension-api:/extensions/test-extension-api
+    command: ["/bin/sh", "-lc", "mkdir -p /data/e2e-config && cp /fixture-config/pinchtab.json /data/e2e-config/pinchtab.json && exec /usr/local/bin/docker-entrypoint.sh pinchtab server --log-level debug --verbose"]
+    ports:
+      - "127.0.0.1:9999:9999"
+    healthcheck: *pinchtab-healthcheck
+
+  pinchtab-secure:
+    <<: *pinchtab-base
+    environment:
+      PINCHTAB_CONFIG: /data/e2e-config/pinchtab-secure.json
+    volumes:
+      - ./config/pinchtab-secure.json:/fixture-config/pinchtab-secure.json:ro
+    command: ["/bin/sh", "-lc", "mkdir -p /data/e2e-config && cp /fixture-config/pinchtab-secure.json /data/e2e-config/pinchtab-secure.json && exec /usr/local/bin/docker-entrypoint.sh pinchtab server --log-level debug --verbose"]
+    ports:
+      - "127.0.0.1:9998:9999"
+    healthcheck: *pinchtab-healthcheck
+
+  pinchtab-autoclose:
+    <<: *pinchtab-base
+    environment:
+      PINCHTAB_CONFIG: /data/e2e-config/pinchtab-autoclose.json
+    volumes:
+      - ./config/pinchtab-autoclose.json:/fixture-config/pinchtab-autoclose.json:ro
+      - ./fixtures/test-extension:/extensions/test-extension
+    command: ["/bin/sh", "-lc", "mkdir -p /data/e2e-config && cp /fixture-config/pinchtab-autoclose.json /data/e2e-config/pinchtab-autoclose.json && exec /usr/local/bin/docker-entrypoint.sh pinchtab server --log-level debug --verbose"]
+    healthcheck: *pinchtab-healthcheck
+
+  pinchtab-medium:
+    <<: *pinchtab-base
+    environment:
+      PINCHTAB_CONFIG: /data/e2e-config/pinchtab-medium-permissive.json
+    volumes:
+      - ./config/pinchtab-medium-permissive.json:/fixture-config/pinchtab-medium-permissive.json:ro
+      - ./fixtures/test-extension:/extensions/test-extension
+    command: ["/bin/sh", "-lc", "mkdir -p /data/e2e-config && cp /fixture-config/pinchtab-medium-permissive.json /data/e2e-config/pinchtab-medium-permissive.json && exec /usr/local/bin/docker-entrypoint.sh pinchtab server --log-level debug --verbose"]
+    ports:
+      - "127.0.0.1:9994:9999"
+    healthcheck: *pinchtab-healthcheck
+
+  pinchtab-full:
+    <<: *pinchtab-base
+    environment:
+      PINCHTAB_CONFIG: /data/e2e-config/pinchtab-full-permissive.json
+    volumes:
+      - ./config/pinchtab-full-permissive.json:/fixture-config/pinchtab-full-permissive.json:ro
+      - ./fixtures/test-extension:/extensions/test-extension
+    command: ["/bin/sh", "-lc", "mkdir -p /data/e2e-config && cp /fixture-config/pinchtab-full-permissive.json /data/e2e-config/pinchtab-full-permissive.json && exec /usr/local/bin/docker-entrypoint.sh pinchtab server --log-level debug --verbose"]
+    ports:
+      - "127.0.0.1:9995:9999"
+    healthcheck: *pinchtab-healthcheck
+
+  pinchtab-retain:
+    <<: *pinchtab-base
+    environment:
+      PINCHTAB_CONFIG: /data/e2e-config/pinchtab-network-retain-bodies.json
+    volumes:
+      - ./config/pinchtab-network-retain-bodies.json:/fixture-config/pinchtab-network-retain-bodies.json:ro
+      - ./fixtures/test-extension:/extensions/test-extension
+    command: ["/bin/sh", "-lc", "mkdir -p /data/e2e-config && cp /fixture-config/pinchtab-network-retain-bodies.json /data/e2e-config/pinchtab-network-retain-bodies.json && exec /usr/local/bin/docker-entrypoint.sh pinchtab server --log-level debug --verbose"]
+    ports:
+      - "127.0.0.1:9993:9999"
+    healthcheck: *pinchtab-healthcheck
+
+  pinchtab-ghostchrome:
+    <<: *pinchtab-base
+    environment:
+      PINCHTAB_CONFIG: /data/e2e-config/pinchtab-ghostchrome.json
+    volumes:
+      - ./config/pinchtab-ghostchrome.json:/fixture-config/pinchtab-ghostchrome.json:ro
+    ports:
+      - "127.0.0.1:9997:9999"
+    command: ["/bin/sh", "-lc", "mkdir -p /data/e2e-config && cp /fixture-config/pinchtab-ghostchrome.json /data/e2e-config/pinchtab-ghostchrome.json && exec /usr/local/bin/docker-entrypoint.sh pinchtab bridge --log-level debug"]
+    healthcheck: *pinchtab-healthcheck
+
+  pinchtab-bridge:
+    <<: *pinchtab-base
+    environment:
+      PINCHTAB_CONFIG: /data/e2e-config/pinchtab-bridge.json
+    volumes:
+      - ./config/pinchtab-bridge.json:/fixture-config/pinchtab-bridge.json:ro
+    ports:
+      - "127.0.0.1:9996:9999"
+    command: ["/bin/sh", "-lc", "mkdir -p /data/e2e-config && cp /fixture-config/pinchtab-bridge.json /data/e2e-config/pinchtab-bridge.json && exec /usr/local/bin/docker-entrypoint.sh pinchtab bridge --log-level debug"]
+    healthcheck:
+      # Bridge-mode pinchtab uses a different auth token. Same tightened
+      # cadence as the shared healthcheck anchor above.
+      test: ["CMD-SHELL", "wget --header='Authorization: Bearer e2e-bridge-token' -q -O /dev/null http://localhost:9999/health"]
+      interval: 1s
+      timeout: 10s
+      retries: 30
+      start_period: 5s
+
+  fixtures:
+    # Custom image: nginx + baked-in default.conf with httpbin-compatible
+    # /redirect/N, /redirect-to, and /get endpoints. Baking the config in
+    # avoids bind-mount races where the new conf doesn't get picked up on
+    # `docker compose up` without a forced recreate.
+    build:
+      context: ./nginx
+    volumes:
+      - ./fixtures:/usr/share/nginx/html:ro
+    networks:
+      default:
+        # Second hostname that points at the same nginx. Used by IDPI
+        # same-tab pivot tests: the page navigates from `fixtures` (in the
+        # IDPI allowlist) to `pivot-target` (not in the allowlist) to
+        # simulate a cross-domain pivot while staying fully offline.
+        aliases:
+          - fixtures
+          - pivot-target
+          # Dedicated host whose nginx vhost roots at the scrape-site/ subdir,
+          # so a seaportal crawl of http://scrapesite/ finds the scrape fixture.
+          - scrapesite
+    healthcheck:
+      # Verify BOTH that nginx is up AND that the custom config is the one
+      # actually loaded. /get is a synthetic endpoint defined only in
+      # tests/e2e/nginx/default.conf — if it returns 200 we know the baked
+      # config is live; if it 404s the container stays unhealthy and the
+      # test runner refuses to start, which surfaces "stale image / config
+      # not loaded" failures up front instead of as opaque test errors.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:80/ && wget -q -O /dev/null http://localhost:80/get"]
+      interval: 1s
+      timeout: 5s
+      retries: 10
+
+  runner-api:
+    build:
+      context: ./runner-api
+    depends_on:
+      pinchtab:
+        condition: service_healthy
+      pinchtab-secure:
+        condition: service_healthy
+      pinchtab-autoclose:
+        condition: service_healthy
+      pinchtab-medium:
+        condition: service_healthy
+      pinchtab-full:
+        condition: service_healthy
+      pinchtab-retain:
+        condition: service_healthy
+      pinchtab-ghostchrome:
+        condition: service_healthy
+      pinchtab-bridge:
+        condition: service_healthy
+      fixtures:
+        condition: service_healthy
+    environment:
+      - E2E_SERVER=http://pinchtab:9999
+      - E2E_SECURE_SERVER=http://pinchtab-secure:9999
+      - E2E_AUTOCLOSE_SERVER=http://pinchtab-autoclose:9999
+      - E2E_MEDIUM_SERVER=http://pinchtab-medium:9999
+      - E2E_FULL_SERVER=http://pinchtab-full:9999
+      - E2E_RETAIN_SERVER=http://pinchtab-retain:9999
+      - E2E_SERVER_GHOSTCHROME=http://pinchtab-ghostchrome:9999
+      - E2E_SERVER_TOKEN=e2e-token
+      - E2E_BRIDGE_URL=http://pinchtab-bridge:9999
+      - E2E_BRIDGE_TOKEN=e2e-bridge-token
+      - FIXTURES_URL=http://fixtures:80
+    volumes:
+      - ./:/e2e:ro
+      - ./results:/results
+
+  runner-cli:
+    # Same role as runner-cli in docker-compose.yml. The Go runner overrides
+    # the executor command for each suite.
+    build:
+      context: ../..
+      dockerfile: tests/e2e/runner-cli/Dockerfile
+    depends_on:
+      pinchtab:
+        condition: service_healthy
+      fixtures:
+        condition: service_healthy
+    environment:
+      - E2E_SERVER=http://pinchtab:9999
+      - E2E_SERVER_TOKEN=e2e-token
+      - FIXTURES_URL=http://fixtures:80
+    volumes:
+      - ./:/e2e:ro
+      - ./results:/results

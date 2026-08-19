@@ -1,0 +1,1135 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/pinchtab/pinchtab/main/schema/config.json",
+  "title": "PinchTab configuration",
+  "description": "Configuration file for PinchTab. The CLI's Go validation remains authoritative for cross-field checks.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri",
+      "default": "https://raw.githubusercontent.com/pinchtab/pinchtab/main/schema/config.json",
+      "description": "JSON Schema URL for IDE validation."
+    },
+    "configVersion": {
+      "type": "string",
+      "default": "0.8.0",
+      "description": "PinchTab config compatibility version."
+    },
+    "server": {
+      "$ref": "#/definitions/server"
+    },
+    "browser": {
+      "$ref": "#/definitions/browser"
+    },
+    "instanceDefaults": {
+      "$ref": "#/definitions/instanceDefaults"
+    },
+    "security": {
+      "$ref": "#/definitions/security"
+    },
+    "profiles": {
+      "$ref": "#/definitions/profiles"
+    },
+    "multiInstance": {
+      "$ref": "#/definitions/multiInstance"
+    },
+    "timeouts": {
+      "$ref": "#/definitions/timeouts"
+    },
+    "scheduler": {
+      "$ref": "#/definitions/scheduler"
+    },
+    "observability": {
+      "$ref": "#/definitions/observability"
+    },
+    "sessions": {
+      "$ref": "#/definitions/sessions"
+    },
+    "autoSolver": {
+      "$ref": "#/definitions/autoSolver"
+    },
+    "browsers": {
+      "$ref": "#/definitions/browsers"
+    }
+  },
+  "definitions": {
+    "nullableBoolean": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "nullableInteger": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "nullableNonNegativeInteger": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableString": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stringArray": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "domainPattern": {
+      "type": "string",
+      "pattern": "^(?!file://)(?!.*\\s).+$",
+      "description": "Hostname or domain pattern. Values must not be empty, contain whitespace, or start with file://."
+    },
+    "domainPatternArray": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/domainPattern"
+      },
+      "default": []
+    },
+    "cidrOrIPArray": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "IP address or CIDR block."
+      },
+      "default": []
+    },
+    "portString": {
+      "type": "string",
+      "pattern": "^(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$"
+    },
+    "nullablePort": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "positiveNullableInteger": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nonNegativeNullableInteger": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "$ref": "#/definitions/portString",
+          "default": "9867"
+        },
+        "bind": {
+          "type": "string",
+          "default": "127.0.0.1"
+        },
+        "token": {
+          "type": "string",
+          "description": "API token. Keep this value secret."
+        },
+        "stateDir": {
+          "type": "string"
+        },
+        "logLevel": {
+          "type": "string",
+          "description": "Minimum log level for the server: debug, info (default), warn or error. Matching is case-insensitive, so no enum here — safelog.ParseLevel is the single authority and reports the accepted values. A daemon-installed or auto-started server passes no flags, so this key is the only way to set the level there."
+        },
+        "engine": {
+          "type": "string",
+          "enum": [
+            "",
+            "chrome",
+            "lite",
+            "auto"
+          ],
+          "default": "chrome",
+          "description": "Deprecated: use browsers.default instead. Values are mapped automatically at startup.",
+          "deprecated": true
+        },
+        "networkBufferSize": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retainNetworkBodies": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "retainNetworkBodyMaxBytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10485760
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "trustProxyHeaders": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "cookieSecure": {
+          "$ref": "#/definitions/nullableBoolean"
+        }
+      }
+    },
+    "browser": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Removed: use browsers.default instead. Presence triggers a validation error.",
+          "deprecated": true,
+          "enum": [
+            "",
+            "chrome",
+            "cloak"
+          ],
+          "default": "chrome"
+        },
+        "version": {
+          "type": "string",
+          "default": "144.0.7559.133"
+        },
+        "binary": {
+          "type": "string"
+        },
+        "remoteDebuggingPort": {
+          "$ref": "#/definitions/nullablePort"
+        },
+        "extraFlags": {
+          "type": "string"
+        },
+        "cloak": {
+          "$ref": "#/definitions/cloakBrowser"
+        },
+        "extensionPaths": {
+          "$ref": "#/definitions/stringArray"
+        },
+        "proxy": {
+          "$ref": "#/definitions/browserProxy"
+        },
+        "defaultTarget": {
+          "type": "string",
+          "description": "Name of the target used when no browser is requested."
+        },
+        "fallbackOrder": {
+          "$ref": "#/definitions/stringArray",
+          "description": "Target names tried in order when an implicit launch fails."
+        },
+        "targets": {
+          "type": "object",
+          "description": "Named browser targets keyed by target name.",
+          "additionalProperties": {
+            "$ref": "#/definitions/browserTarget"
+          }
+        }
+      }
+    },
+    "cloakBrowser": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fingerprintSeed": {
+          "type": "string",
+          "pattern": "^\\S*$",
+          "description": "Deterministic CloakBrowser fingerprint seed. Empty lets CloakBrowser generate a fresh identity."
+        },
+        "platform": {
+          "type": "string",
+          "enum": [
+            "",
+            "windows",
+            "macos",
+            "linux"
+          ]
+        },
+        "locale": {
+          "type": "string",
+          "pattern": "^\\S*$"
+        },
+        "timezone": {
+          "type": "string",
+          "pattern": "^\\S*$"
+        },
+        "webrtcIP": {
+          "type": "string",
+          "pattern": "^\\S*$",
+          "description": "Explicit WebRTC replacement IP, or auto when CloakBrowser should resolve the proxy exit IP."
+        },
+        "fontsDir": {
+          "type": "string"
+        },
+        "storageQuotaMB": {
+          "$ref": "#/definitions/nullableNonNegativeInteger"
+        },
+        "disableDefaultStealthArgs": {
+          "$ref": "#/definitions/nullableBoolean",
+          "description": "When true, PinchTab does not add its JS stealth overlays or automation-hiding launch flags for CloakBrowser."
+        }
+      }
+    },
+    "instanceDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "",
+            "headless",
+            "headed"
+          ],
+          "default": "headless"
+        },
+        "headless": {
+          "$ref": "#/definitions/nullableBoolean",
+          "description": "Shorthand for mode. true = headless, false = headed. Ignored when mode is also set."
+        },
+        "noRestore": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "blockImages": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "blockMedia": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "blockAds": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "maxTabs": {
+          "$ref": "#/definitions/positiveNullableInteger",
+          "default": 20
+        },
+        "maxParallelTabs": {
+          "$ref": "#/definitions/nonNegativeNullableInteger",
+          "default": 0
+        },
+        "userAgent": {
+          "type": "string"
+        },
+        "noAnimations": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "captureAllowActivation": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "humanize": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "stealthLevel": {
+          "type": "string",
+          "enum": [
+            "",
+            "light",
+            "medium",
+            "full"
+          ],
+          "default": "light"
+        },
+        "tabEvictionPolicy": {
+          "type": "string",
+          "enum": [
+            "",
+            "reject",
+            "close_oldest",
+            "close_lru"
+          ],
+          "default": "close_lru",
+          "description": "Deprecated. Prefer instanceDefaults.tabPolicy.eviction."
+        },
+        "tabPolicy": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/tabPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dialogAutoAccept": {
+          "$ref": "#/definitions/nullableBoolean"
+        }
+      }
+    },
+    "tabPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "eviction": {
+          "type": "string",
+          "enum": [
+            "",
+            "reject",
+            "close_oldest",
+            "close_lru"
+          ]
+        },
+        "lifecycle": {
+          "type": "string",
+          "enum": [
+            "",
+            "keep",
+            "close_idle"
+          ]
+        },
+        "closeDelaySec": {
+          "$ref": "#/definitions/nonNegativeNullableInteger"
+        },
+        "restore": {
+          "$ref": "#/definitions/nullableBoolean"
+        }
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseDir": {
+          "type": "string"
+        },
+        "defaultProfile": {
+          "type": "string",
+          "default": "default"
+        },
+        "quarantineKeep": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1,
+          "description": "How many quarantined copies of one profile to keep when a new quarantine is created, newest first. 0 keeps every one."
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowEvaluate": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "allowMacro": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "allowScreencast": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "allowDownload": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "allowCookies": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "allowedDomains": {
+          "$ref": "#/definitions/domainPatternArray"
+        },
+        "downloadAllowedDomains": {
+          "$ref": "#/definitions/domainPatternArray"
+        },
+        "downloadMaxBytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 104857600
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 20971520
+        },
+        "allowUpload": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "allowClipboard": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "allowStateExport": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "stateEncryptionKey": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "enableActionGuards": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "uploadMaxRequestBytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 104857600
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 10485760
+        },
+        "uploadMaxFiles": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 8
+        },
+        "uploadMaxFileBytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 26214400
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 5242880
+        },
+        "uploadMaxTotalBytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 104857600
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 10485760
+        },
+        "maxRedirects": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -1
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": -1
+        },
+        "trustedProxyCIDRs": {
+          "$ref": "#/definitions/cidrOrIPArray"
+        },
+        "trustedResolveCIDRs": {
+          "$ref": "#/definitions/cidrOrIPArray"
+        },
+        "attach": {
+          "$ref": "#/definitions/attach"
+        },
+        "idpi": {
+          "$ref": "#/definitions/idpi"
+        }
+      }
+    },
+    "attach": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "allowHosts": {
+          "$ref": "#/definitions/stringArray"
+        },
+        "allowSchemes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "ws",
+              "wss",
+              "http",
+              "https"
+            ]
+          },
+          "default": [
+            "ws",
+            "wss",
+            "http",
+            "https"
+          ]
+        },
+        "forwardProxyAuth": {
+          "$ref": "#/definitions/nullableBoolean",
+          "default": false,
+          "description": "Allow forwarding configured proxy authentication credentials over remote CDP attach. Disabled by default because the attached browser is outside PinchTab's process trust boundary."
+        }
+      }
+    },
+    "idpi": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "strictMode": {
+          "type": "boolean",
+          "default": true
+        },
+        "scanContent": {
+          "type": "boolean",
+          "default": true
+        },
+        "wrapContent": {
+          "type": "boolean",
+          "default": true
+        },
+        "customPatterns": {
+          "$ref": "#/definitions/stringArray"
+        },
+        "scanTimeoutSec": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 5
+        },
+        "shieldThreshold": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 0
+        }
+      }
+    },
+    "multiInstance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "",
+            "simple",
+            "explicit",
+            "simple-autorestart",
+            "always-on",
+            "no-instance"
+          ],
+          "default": "always-on"
+        },
+        "allocationPolicy": {
+          "type": "string",
+          "enum": [
+            "",
+            "fcfs",
+            "round_robin",
+            "random"
+          ],
+          "default": "fcfs"
+        },
+        "instancePortStart": {
+          "$ref": "#/definitions/nullablePort",
+          "default": 9868
+        },
+        "instancePortEnd": {
+          "$ref": "#/definitions/nullablePort",
+          "default": 9968
+        },
+        "restart": {
+          "$ref": "#/definitions/restart"
+        }
+      }
+    },
+    "restart": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxRestarts": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -1
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 20
+        },
+        "initBackoffSec": {
+          "$ref": "#/definitions/positiveNullableInteger",
+          "default": 2
+        },
+        "maxBackoffSec": {
+          "$ref": "#/definitions/positiveNullableInteger",
+          "default": 60
+        },
+        "stableAfterSec": {
+          "$ref": "#/definitions/positiveNullableInteger",
+          "default": 300
+        }
+      }
+    },
+    "timeouts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "actionSec": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 30
+        },
+        "navigateSec": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 60
+        },
+        "shutdownSec": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 10
+        },
+        "waitNavMs": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1000
+        }
+      }
+    },
+    "scheduler": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "strategy": {
+          "type": "string"
+        },
+        "maxQueueSize": {
+          "$ref": "#/definitions/nonNegativeNullableInteger"
+        },
+        "maxPerAgent": {
+          "$ref": "#/definitions/nonNegativeNullableInteger"
+        },
+        "maxInflight": {
+          "$ref": "#/definitions/nonNegativeNullableInteger"
+        },
+        "maxPerAgentInflight": {
+          "$ref": "#/definitions/nonNegativeNullableInteger"
+        },
+        "resultTTLSec": {
+          "$ref": "#/definitions/nonNegativeNullableInteger"
+        },
+        "workerCount": {
+          "$ref": "#/definitions/nonNegativeNullableInteger"
+        },
+        "maxBatchSize": {
+          "$ref": "#/definitions/nonNegativeNullableInteger"
+        }
+      }
+    },
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "activity": {
+          "$ref": "#/definitions/activity"
+        }
+      }
+    },
+    "activity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "sessionIdleSec": {
+          "$ref": "#/definitions/nonNegativeNullableInteger",
+          "default": 1800
+        },
+        "retentionDays": {
+          "$ref": "#/definitions/positiveNullableInteger",
+          "default": 30
+        },
+        "stateDir": {
+          "type": "string"
+        },
+        "events": {
+          "$ref": "#/definitions/activityEvents"
+        }
+      }
+    },
+    "activityEvents": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dashboard": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "server": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "bridge": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "orchestrator": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "scheduler": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "mcp": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "other": {
+          "$ref": "#/definitions/nullableBoolean"
+        }
+      }
+    },
+    "sessions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dashboard": {
+          "$ref": "#/definitions/dashboardSession"
+        },
+        "agent": {
+          "$ref": "#/definitions/agentSession"
+        }
+      }
+    },
+    "dashboardSession": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "persist": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "idleTimeoutSec": {
+          "$ref": "#/definitions/positiveNullableInteger",
+          "default": 604800
+        },
+        "maxLifetimeSec": {
+          "$ref": "#/definitions/positiveNullableInteger",
+          "default": 604800
+        },
+        "elevationWindowSec": {
+          "$ref": "#/definitions/positiveNullableInteger",
+          "default": 900
+        },
+        "persistElevationAcrossRestart": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "requireElevation": {
+          "$ref": "#/definitions/nullableBoolean"
+        }
+      }
+    },
+    "agentSession": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "idleTimeoutSec": {
+          "$ref": "#/definitions/positiveNullableInteger"
+        },
+        "maxLifetimeSec": {
+          "$ref": "#/definitions/positiveNullableInteger"
+        }
+      }
+    },
+    "autoSolver": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "autoTrigger": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "triggerOnNavigate": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "triggerOnAction": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "maxAttempts": {
+          "$ref": "#/definitions/positiveNullableInteger",
+          "default": 8
+        },
+        "solverTimeoutSec": {
+          "$ref": "#/definitions/positiveNullableInteger",
+          "default": 30
+        },
+        "retryBaseDelayMs": {
+          "$ref": "#/definitions/nonNegativeNullableInteger",
+          "default": 500
+        },
+        "retryMaxDelayMs": {
+          "$ref": "#/definitions/nonNegativeNullableInteger",
+          "default": 10000
+        },
+        "solvers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": [
+            "cloudflare",
+            "semantic",
+            "capsolver",
+            "twocaptcha"
+          ]
+        },
+        "llmProvider": {
+          "type": "string"
+        },
+        "llmFallback": {
+          "$ref": "#/definitions/nullableBoolean"
+        },
+        "external": {
+          "$ref": "#/definitions/autoSolverExternal"
+        },
+        "credentials": {
+          "$ref": "#/definitions/autoSolverCredentials"
+        }
+      }
+    },
+    "autoSolverExternal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "capsolverKey": {
+          "type": "string"
+        },
+        "twoCaptchaKey": {
+          "type": "string"
+        }
+      }
+    },
+    "autoSolverCredentials": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "login": {
+          "$ref": "#/definitions/autoSolverLogin"
+        },
+        "signup": {
+          "$ref": "#/definitions/autoSolverSignup"
+        },
+        "form": {
+          "$ref": "#/definitions/autoSolverForm"
+        }
+      }
+    },
+    "autoSolverLogin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "user": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        }
+      }
+    },
+    "autoSolverSignup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        }
+      }
+    },
+    "autoSolverForm": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "field1": {
+          "type": "string"
+        },
+        "field2": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        }
+      }
+    },
+    "browsers": {
+      "type": "object",
+      "description": "Phase 1 browser configuration.",
+      "properties": {
+        "default": {
+          "type": "string",
+          "description": "Default browser for new instances.",
+          "enum": [
+            "chrome",
+            "ghost-chrome",
+            "cloak"
+          ],
+          "default": "chrome"
+        },
+        "available": {
+          "type": "array",
+          "description": "Available browser names.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "chrome",
+              "ghost-chrome",
+              "cloak"
+            ]
+          }
+        }
+      }
+    },
+    "browserProxy": {
+      "type": "object",
+      "description": "Upstream proxy for browser traffic. Credentials are delivered via CDP, never on the command line.",
+      "additionalProperties": false,
+      "properties": {
+        "server": {
+          "type": "string",
+          "description": "Proxy server URL (e.g. http://proxy.example:8080)."
+        },
+        "bypassList": {
+          "$ref": "#/definitions/stringArray",
+          "description": "Hosts that bypass the proxy."
+        },
+        "username": {
+          "type": "string",
+          "description": "Proxy username."
+        },
+        "password": {
+          "type": "string",
+          "description": "Proxy password. Redacted in API responses."
+        },
+        "geo": {
+          "type": "object",
+          "description": "Geo alignment hints applied when the proxy egress is in another region.",
+          "additionalProperties": false,
+          "properties": {
+            "timezone": {
+              "type": "string",
+              "description": "IANA timezone matching the proxy egress (e.g. Europe/Paris)."
+            },
+            "locale": {
+              "type": "string",
+              "description": "BCP-47 locale matching the proxy egress (e.g. fr-FR)."
+            },
+            "webrtcIP": {
+              "type": "string",
+              "description": "Public IP to expose via WebRTC instead of the local address."
+            },
+            "countryISO": {
+              "type": "string",
+              "description": "ISO 3166-1 alpha-2 country code of the proxy egress."
+            }
+          }
+        }
+      }
+    },
+    "browserTarget": {
+      "type": "object",
+      "description": "A named browser target: a provider plus per-target overrides.",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Browser provider for this target.",
+          "enum": [
+            "chrome",
+            "ghost-chrome",
+            "cloak"
+          ]
+        },
+        "binary": {
+          "type": "string",
+          "description": "Path to the browser binary for this target."
+        },
+        "extraFlags": {
+          "type": "string",
+          "description": "Additional space-separated browser flags for this target."
+        },
+        "cloak": {
+          "$ref": "#/definitions/cloakBrowser"
+        },
+        "proxy": {
+          "$ref": "#/definitions/browserProxy"
+        }
+      }
+    }
+  }
+}

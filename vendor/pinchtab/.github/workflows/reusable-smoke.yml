@@ -1,0 +1,109 @@
+name: Reusable / Smoke
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+    outputs:
+      status:
+        value: ${{ jobs.smoke.outputs.status }}
+      passed:
+        value: ${{ jobs.smoke.outputs.passed }}
+      failed:
+        value: ${{ jobs.smoke.outputs.failed }}
+      tests:
+        value: ${{ jobs.smoke.outputs.tests }}
+      suites:
+        value: ${{ jobs.smoke.outputs.suites }}
+      test_time:
+        value: ${{ jobs.smoke.outputs.test_time }}
+      test_time_ms:
+        value: ${{ jobs.smoke.outputs.test_time_ms }}
+      overall_wall_time:
+        value: ${{ jobs.smoke.outputs.overall_wall_time }}
+      overall_wall_time_ms:
+        value: ${{ jobs.smoke.outputs.overall_wall_time_ms }}
+      failures:
+        value: ${{ jobs.smoke.outputs.failures }}
+
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      status: ${{ steps.smoke.outputs.status }}
+      passed: ${{ steps.smoke.outputs.passed }}
+      failed: ${{ steps.smoke.outputs.failed }}
+      tests: ${{ steps.smoke.outputs.tests }}
+      suites: ${{ steps.smoke.outputs.suites }}
+      test_time: ${{ steps.smoke.outputs.test_time }}
+      test_time_ms: ${{ steps.smoke.outputs.test_time_ms }}
+      overall_wall_time: ${{ steps.smoke.outputs.overall_wall_time }}
+      overall_wall_time_ms: ${{ steps.smoke.outputs.overall_wall_time_ms }}
+      failures: ${{ steps.smoke.outputs.failures }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Install smoke runtime deps
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq coreutils curl
+
+      - name: Smoke tool diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in bash docker jq awk sed grep find sort tee head python3; do
+            if command -v "$tool" >/dev/null 2>&1; then
+              echo "[ok] $tool: $(command -v "$tool")"
+            else
+              echo "[missing] $tool"
+            fi
+          done
+          docker --version || true
+          docker compose version || docker-compose version || true
+          jq --version || true
+
+      - name: Run smoke suite
+        id: smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tests/e2e/results
+          rm -f tests/e2e/results/summary*.txt tests/e2e/results/report*.md tests/e2e/results/output*.log
+
+          go run ./tests/tools/runner e2e --suite smoke --logs hide
+        env:
+          DOCKER_BUILDKIT: 1
+          COMPOSE_DOCKER_CLI_BUILD: 1
+          PINCHTAB_DOCKER_SMOKE_TAG_SUFFIX: ${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: smoke-results
+          path: |
+            tests/e2e/results/
+          if-no-files-found: warn
+          retention-days: 7

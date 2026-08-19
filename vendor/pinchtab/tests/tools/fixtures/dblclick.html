@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PinchTab Benchmark - Double Click Edit</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    table { border-collapse: collapse; margin: 12px 0; }
+    th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+    th { background: #f5f5f5; }
+    td.editable { cursor: pointer; }
+    td.editable:hover { background: #fffde7; }
+    td.editing input {
+      width: 100%;
+      padding: 4px;
+      border: 2px solid #2196f3;
+      border-radius: 2px;
+      box-sizing: border-box;
+    }
+    #status { margin-top: 16px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <h1>Inline Edit Table — VERIFY_DBLCLICK_PAGE_60606</h1>
+
+  <p>Double-click a cell in the Name column to edit it. Press Enter to
+  save or Escape to cancel.</p>
+
+  <table id="staff-table">
+    <thead><tr><th>ID</th><th>Name</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td class="editable" id="cell-1" data-field="name" tabindex="0">Alice</td>
+        <td>Engineer</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td class="editable" id="cell-2" data-field="name" tabindex="0">Bob</td>
+        <td>Designer</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td class="editable" id="cell-3" data-field="name" tabindex="0">Charlie</td>
+        <td>Manager</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div id="status">CELL_EDIT_STATUS=IDLE</div>
+
+  <script>
+    (function () {
+      var status = document.getElementById('status');
+      document.querySelectorAll('.editable').forEach(function (cell) {
+        cell.addEventListener('dblclick', function () {
+          if (cell.classList.contains('editing')) return;
+          var original = cell.textContent;
+          cell.classList.add('editing');
+          var input = document.createElement('input');
+          input.type = 'text';
+          input.value = original;
+          cell.textContent = '';
+          cell.appendChild(input);
+          input.focus();
+          status.textContent = 'CELL_EDITING_MODE_ACTIVE CELL_ID=' + cell.id;
+
+          input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+              var newValue = input.value;
+              cell.classList.remove('editing');
+              cell.textContent = newValue;
+              status.textContent = 'CELL_VALUE_UPDATED=' + newValue + ' CELL_ID=' + cell.id;
+            } else if (e.key === 'Escape') {
+              cell.classList.remove('editing');
+              cell.textContent = original;
+              status.textContent = 'CELL_EDIT_CANCELLED CELL_ID=' + cell.id;
+            }
+          });
+
+          input.addEventListener('blur', function () {
+            if (cell.classList.contains('editing')) {
+              cell.classList.remove('editing');
+              cell.textContent = original;
+              status.textContent = 'CELL_EDIT_CANCELLED CELL_ID=' + cell.id;
+            }
+          });
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

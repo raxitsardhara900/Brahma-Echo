@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Element Attributes — VERIFY_ATTRIBUTES_PAGE_77777</title>
+</head>
+<body>
+  <header>
+    <nav><a href="/">Home</a> | <a href="/attributes.html">Attributes</a></nav>
+  </header>
+  <main>
+    <h1>Element Attributes Test Page</h1>
+
+    <section id="buttons-section">
+      <h2>Buttons</h2>
+      <button id="btn-save" data-testid="save-action" class="primary">Save</button>
+      <button id="btn-cancel" data-testid="cancel-action" class="secondary">Cancel</button>
+      <button id="btn-delete" data-testid="delete-action" class="danger" disabled>Delete</button>
+      <button id="btn-archive" data-testid="archive-action" class="secondary" disabled>Archive</button>
+      <button id="btn-submit" data-testid="submit-action" class="primary">Submit</button>
+    </section>
+
+    <section id="checkboxes-section">
+      <h2>Preferences</h2>
+      <label><input type="checkbox" id="cb-email" name="pref" checked> Email notifications</label>
+      <label><input type="checkbox" id="cb-sms" name="pref"> SMS notifications</label>
+      <label><input type="checkbox" id="cb-push" name="pref" checked> Push notifications</label>
+      <label><input type="checkbox" id="cb-weekly" name="pref" checked> Weekly digest</label>
+      <label><input type="checkbox" id="cb-promo" name="pref"> Promotional offers</label>
+    </section>
+
+    <section id="inputs-section">
+      <h2>Form Fields</h2>
+      <label for="inp-name">Name:</label>
+      <input type="text" id="inp-name" value="Alice" data-testid="name-field">
+      <label for="inp-email">Email:</label>
+      <input type="email" id="inp-email" value="alice@test.com" disabled data-testid="email-field">
+      <label for="inp-phone">Phone:</label>
+      <input type="tel" id="inp-phone" value="" placeholder="Optional" data-testid="phone-field">
+    </section>
+
+    <section id="hidden-section">
+      <h2>Visibility</h2>
+      <p id="visible-msg" data-testid="status-visible">This message is visible</p>
+      <p id="hidden-msg" data-testid="status-hidden" style="display: none;">This message is hidden</p>
+      <p id="offscreen-msg" data-testid="status-offscreen" style="position: absolute; left: -9999px;">Off-screen content</p>
+    </section>
+
+    <section id="links-section">
+      <h2>Navigation Links</h2>
+      <a href="/wiki.html" id="link-wiki" data-testid="nav-wiki">Wiki</a>
+      <a href="/articles.html" id="link-articles" data-testid="nav-articles">Articles</a>
+      <a href="/dashboard.html" id="link-dashboard" data-testid="nav-dashboard">Dashboard</a>
+      <a href="/form.html" id="link-form" data-testid="nav-form">Contact</a>
+      <a href="/ecommerce.html" id="link-shop" data-testid="nav-shop">Shop</a>
+      <a href="/login.html" id="link-login" data-testid="nav-login">Login</a>
+      <a href="/spa.html" id="link-tasks" data-testid="nav-tasks">Tasks</a>
+    </section>
+
+    <section id="counters">
+      <h2>Verification Counters</h2>
+      <p>ATTR_BUTTON_COUNT_5</p>
+      <p>ATTR_CHECKBOX_COUNT_5</p>
+      <p>ATTR_CHECKED_COUNT_3</p>
+      <p>ATTR_DISABLED_BUTTON_COUNT_2</p>
+      <p>ATTR_ENABLED_BUTTON_COUNT_3</p>
+      <p>ATTR_LINK_COUNT_7</p>
+      <p>ATTR_INPUT_COUNT_3</p>
+      <p>ATTR_NAME_VALUE_ALICE</p>
+      <p>ATTR_EMAIL_DISABLED_TRUE</p>
+    </section>
+  </main>
+</body>
+</html>

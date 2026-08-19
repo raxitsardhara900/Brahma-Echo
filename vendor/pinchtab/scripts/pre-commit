@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Pre-commit hook: Go + Dashboard checks
+
+echo "🔍 Running pre-commit checks..."
+
+# ============================================
+# Go checks (gofmt + golangci-lint)
+# ============================================
+staged_go=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)
+if [ -n "$staged_go" ]; then
+  echo "📦 Checking Go files..."
+  
+  # gofmt check
+  unformatted=$(gofmt -l $staged_go 2>/dev/null || true)
+  if [ -n "$unformatted" ]; then
+    echo "❌ gofmt: files not formatted:"
+    echo "$unformatted"
+    echo "Run: gofmt -w $unformatted"
+    exit 1
+  fi
+
+  # golangci-lint
+  GOLANGCI_LINT=""
+  if command -v golangci-lint &>/dev/null; then
+    GOLANGCI_LINT="golangci-lint"
+  elif [ -x "${GOPATH:-$HOME/go}/bin/golangci-lint" ]; then
+    GOLANGCI_LINT="${GOPATH:-$HOME/go}/bin/golangci-lint"
+  elif [ -x "$HOME/go/bin/golangci-lint" ]; then
+    GOLANGCI_LINT="$HOME/go/bin/golangci-lint"
+  fi
+
+  if [ -z "$GOLANGCI_LINT" ]; then
+    echo "❌ golangci-lint not found"
+    echo "   Install: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"
+    exit 1
+  fi
+
+  dirs=$(echo "$staged_go" | xargs -n1 dirname | sort -u | sed 's|$|/...|')
+  if ! $GOLANGCI_LINT run --timeout=5m $dirs; then
+    echo "❌ golangci-lint: issues found"
+    exit 1
+  fi
+  
+  echo "✅ Go checks passed"
+fi
+
+# ============================================
+# Dashboard checks (TypeScript + ESLint + Prettier)
+# ============================================
+staged_web=$(git diff --cached --name-only --diff-filter=ACM | grep '^dashboard/.*\.\(ts\|tsx\|js\|jsx\|css\)$' || true)
+if [ -n "$staged_web" ]; then
+  echo "🌐 Checking dashboard files..."
+  
+  cd dashboard
+  
+  # Check if bun is available
+  if ! command -v bun &>/dev/null; then
+    echo "⚠️  bun not found, skipping dashboard checks"
+    cd ..
+  else
+    # TypeScript check
+    echo "  → TypeScript..."
+    if ! bun run tsc --noEmit 2>/dev/null; then
+      echo "❌ TypeScript: type errors found"
+      cd ..
+      exit 1
+    fi
+    
+    # ESLint check
+    echo "  → ESLint..."
+    if ! bun run lint 2>/dev/null; then
+      echo "❌ ESLint: issues found"
+      cd ..
+      exit 1
+    fi
+    
+    # Prettier check (on staged files only)
+    echo "  → Prettier..."
+    staged_rel=$(echo "$staged_web" | sed 's|^dashboard/||')
+    if ! echo "$staged_rel" | xargs bunx prettier --check 2>/dev/null; then
+      echo "❌ Prettier: files not formatted"
+      echo "Run: cd dashboard && bun run format"
+      cd ..
+      exit 1
+    fi
+    
+    cd ..
+    echo "✅ Dashboard checks passed"
+  fi
+fi
+
+# ============================================
+# Summary
+# ============================================
+if [ -z "$staged_go" ] && [ -z "$staged_web" ]; then
+  echo "⏭️  No Go or dashboard files staged, skipping checks"
+fi
+
+echo "✅ All pre-commit checks passed"

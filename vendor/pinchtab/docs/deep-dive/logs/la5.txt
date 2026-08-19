@@ -1,0 +1,326 @@
+dev bench agent-browser --max-turns 100 --verbose --groups 0,1
+warning: multiple providers configured, defaulting to anthropic
+Force-recreating agent-browser and fixtures...
+Compose now can delegate build to bake for better performances
+Just set COMPOSE_BAKE=true
+[+] Building 0.6s (9/9) FINISHED                                                     docker:desktop-linux
+ => [agent-browser internal] load build definition from Dockerfile                                   0.0s
+ => => transferring dockerfile: 573B                                                                 0.0s
+ => [agent-browser internal] load metadata for docker.io/library/node:20-bookworm                    0.5s
+ => [agent-browser internal] load .dockerignore                                                      0.0s
+ => => transferring context: 2B                                                                      0.0s
+ => [agent-browser 1/4] FROM docker.io/library/node:20-bookworm@sha256:8789e1e0752d81088a085689c04f  0.0s
+ => => resolve docker.io/library/node:20-bookworm@sha256:8789e1e0752d81088a085689c04fdb7a5b16e8102e  0.0s
+ => CACHED [agent-browser 2/4] RUN apt-get update && apt-get install -y --no-install-recommends      0.0s
+ => CACHED [agent-browser 3/4] RUN npm install -g agent-browser                                      0.0s
+ => CACHED [agent-browser 4/4] WORKDIR /workspace/tests/benchmark                                    0.0s
+ => [agent-browser] exporting to image                                                               0.0s
+ => => exporting layers                                                                              0.0s
+ => => exporting manifest sha256:5da4df76bc16d03b53cfdd7e5916ad6f07e39c7567b57d4575b73095e5be8a64    0.0s
+ => => exporting config sha256:0005103a0fcf7270a11bc88db271999149c096a465817b178af786c87a3c52b8      0.0s
+ => => exporting attestation manifest sha256:3e8a5a4f72506009828e482cc1a8593256d033facd176f4cc7b092  0.0s
+ => => exporting manifest list sha256:2d805c45a2a1fd5f2b11a4dfa09b51617f701f8d5fbacb6eb079dda2d6afc  0.0s
+ => => naming to docker.io/library/tools-agent-browser:latest                                        0.0s
+ => => unpacking to docker.io/library/tools-agent-browser:latest                                     0.0s
+ => [agent-browser] resolving provenance for metadata file                                           0.0s
+[+] Running 3/3
+ ✔ agent-browser                    Built                                                            0.0s 
+ ✔ Container tools-agent-browser-1  Started                                                         13.1s 
+ ✔ Container tools-fixtures-1       Healthy                                                          2.9s 
+Verified: agent-browser up and fixtures reachable
+=== PinchTab Benchmark Run #1 ===
+Timestamp: 20260420_140522
+Report: <repo>/tests/benchmark/results/agent_browser_benchmark_20260420_140522.json
+
+[benchmark-runner] provider=anthropic model=claude-haiku-4-5-20251001 lane=agent-browser groups=0,1 report=<repo>/tests/benchmark/results/agent_browser_benchmark_20260420_140522.json
+
+══ Benchmark start ══
+  lane:   agent-browser
+  model:  claude-haiku-4-5-20251001
+  report: <repo>/tests/benchmark/results/agent_browser_benchmark_20260420_140522.json
+
+  Group 0 — 5 step(s):
+    0.1  Navigate to page
+    0.2  Take snapshot
+    0.3  Read page text
+    0.4  Click a link
+    0.5  Extract specific data
+
+  Group 1 — 5 step(s):
+    1.1  Fill a text input
+    1.2  Click a button
+    1.3  Use search functionality
+    1.4  Handle dynamic content
+    1.5  Navigate back
+
+  Total: 10 step(s) across 2 group(s)
+
+
+─── Turn 1/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2 in, 6047 cc, 0 cr, 119 out
+▶ ./scripts/ab open http://fixtures/
+  ✓ ✓ PinchTab Benchmark - Home
+         http://fixtures/ [469ms]
+
+─── Turn 2/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 174 in, 0 cc, 6047 cr, 100 out
+▶ ./scripts/ab snapshot -i -c
+  ✓ - heading "PinchTab Benchmark Suite" [level=1, ref=e1]
+       - link "Articles" [ref=e2] (+11 lines) [339ms]
+
+─── Turn 3/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 496 in, 0 cc, 6047 cr, 140 out
+▶ ./scripts/runner step-end 0 1 answer "Page loaded successfully with title 'Pi...
+  ✓ Recorded 0.1 answer
+       Verified: Step 0.1 = pass [1.655s]
+
+─── Turn 4/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 727 in, 0 cc, 6047 cr, 142 out
+▶ ./scripts/runner step-end 0 2 answer "Snapshot captured with 13 interactive e...
+  ✓ Recorded 0.2 answer
+       Verified: Step 0.2 = pass [1.66s]
+
+─── Turn 5/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 970 in, 0 cc, 6047 cr, 105 out
+▶ ./scripts/ab get text @e7
+  ✓ Welcome to the Benchmark Test Suite [332ms]
+
+─── Turn 6/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1118 in, 0 cc, 6047 cr, 123 out
+▶ ./scripts/runner step-end 0 3 answer "Text content extracted: 'Welcome to the...
+  ✓ Recorded 0.3 answer
+       Verified: Step 0.3 = pass [1.674s]
+
+─── Turn 7/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1324 in, 0 cc, 6047 cr, 107 out
+▶ ./scripts/ab click @e9
+  ✓ ✓ Done [329ms]
+
+─── Turn 8/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1214 in, 0 cc, 6047 cr, 97 out
+▶ ./scripts/ab snapshot -i -c
+  ✓ - link "Home" [ref=e2]
+       - link "Articles" [ref=e3] (+16 lines) [333ms]
+
+─── Turn 9/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1645 in, 0 cc, 6047 cr, 146 out
+▶ ./scripts/runner step-end 0 4 answer "Clicked link and navigated to Articles ...
+  ✓ Recorded 0.4 answer
+       Verified: Step 0.4 = pass [1.689s]
+
+─── Turn 10/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1456 in, 0 cc, 6047 cr, 106 out
+▶ ./scripts/ab get text @e4
+  ✓ The Future of Artificial Intelligence [359ms]
+
+─── Turn 11/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1604 in, 0 cc, 6047 cr, 126 out
+▶ ./scripts/runner step-end 0 5 answer "Extracted text from article heading: 'T...
+  ✓ Recorded 0.5 answer
+       Verified: Step 0.5 = pass [1.687s]
+
+─── Turn 12/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1493 in, 0 cc, 6047 cr, 118 out
+▶ ./scripts/ab open http://fixtures/form.html
+  ✓ ✓ Form - PinchTab Benchmark
+         http://fixtures/form.html [344ms]
+
+─── Turn 13/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1670 in, 0 cc, 6047 cr, 96 out
+▶ ./scripts/ab snapshot -i -c
+  ✓ - link "Home" [ref=e2]
+       - link "Form" [ref=e3] (+25 lines) [367ms]
+
+─── Turn 14/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1639 in, 0 cc, 6047 cr, 113 out
+▶ ./scripts/ab fill @e4 "John Doe"
+  ✓ ✓ Done [354ms]
+
+─── Turn 15/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1797 in, 0 cc, 6047 cr, 94 out
+▶ ./scripts/ab get value @e4
+  ✓ John Doe [356ms]
+
+─── Turn 16/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1539 in, 0 cc, 6047 cr, 123 out
+▶ ./scripts/runner step-end 1 1 answer "Filled Full Name input field with 'John...
+  ✓ Recorded 1.1 answer
+       Verified: Step 1.1 = pass [1.664s]
+
+─── Turn 17/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1745 in, 0 cc, 6047 cr, 104 out
+▶ ./scripts/ab click @e14
+  ✓ ✓ Done [361ms]
+
+─── Turn 18/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1527 in, 0 cc, 6047 cr, 100 out
+▶ ./scripts/ab snapshot -i -c
+  ✓ - link "Home" [ref=e2]
+       - link "Form" [ref=e3] (+25 lines) [345ms]
+
+─── Turn 19/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2080 in, 0 cc, 6047 cr, 128 out
+▶ ./scripts/ab fill @e5 "john@example.com"
+  ✓ ✓ Done [362ms]
+
+─── Turn 20/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1551 in, 0 cc, 6047 cr, 92 out
+▶ ./scripts/ab click @e14
+  ✓ ✓ Done [378ms]
+
+─── Turn 21/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1682 in, 0 cc, 6047 cr, 100 out
+▶ ./scripts/ab snapshot -i -c
+  ✓ - link "Home" [ref=e2]
+       - link "Form" [ref=e3] (+26 lines) [349ms]
+
+─── Turn 22/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1920 in, 0 cc, 6047 cr, 157 out
+▶ ./scripts/runner step-end 1 2 answer "Clicked Submit Form button; form valida...
+  ✓ Recorded 1.2 answer
+       Verified: Step 1.2 = pass [1.685s]
+
+─── Turn 23/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2168 in, 0 cc, 6047 cr, 108 out
+▶ ./scripts/ab open http://fixtures/search.html
+  ✓ ✓ Search - PinchTab Benchmark
+         http://fixtures/search.html [365ms]
+
+─── Turn 24/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1673 in, 0 cc, 6047 cr, 97 out
+▶ ./scripts/ab snapshot -i -c
+  ✓ - link "Home" [ref=e2]
+       - link "Search" [ref=e3] (+3 lines) [346ms]
+
+─── Turn 25/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1882 in, 0 cc, 6047 cr, 112 out
+▶ ./scripts/ab fill @e4 "artificial intelligence"
+  ✓ ✓ Done [357ms]
+
+─── Turn 26/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1732 in, 0 cc, 6047 cr, 93 out
+▶ ./scripts/ab click @e5
+  ✓ ✓ Done [366ms]
+
+─── Turn 27/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1864 in, 0 cc, 6047 cr, 97 out
+▶ ./scripts/ab snapshot -i -c
+  ✓ - link "Home" [ref=e2]
+       - link "Search" [ref=e3] (+5 lines) [360ms]
+
+─── Turn 28/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1292 in, 0 cc, 6047 cr, 156 out
+▶ ./scripts/runner step-end 1 3 answer "Entered 'artificial intelligence' in se...
+  ✓ Recorded 1.3 answer
+       Verified: Step 1.3 = pass [1.685s]
+
+─── Turn 29/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1560 in, 0 cc, 6047 cr, 114 out
+▶ ./scripts/ab open http://fixtures/spa.html
+  ✓ ✓ Task Manager — PinchTab Benchmark
+         http://fixtures/spa.html [376ms]
+
+─── Turn 30/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1414 in, 0 cc, 6047 cr, 97 out
+▶ ./scripts/ab snapshot -i -c
+  ✓ - heading "Task Manager — VERIFY_SPA_PAGE_99999" [level=1, ref=e1]
+       - button "All Tasks" [ref=e2] (+15 lines) [361ms]
+
+─── Turn 31/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1799 in, 0 cc, 6047 cr, 115 out
+▶ ./scripts/ab fill @e5 "Test dynamic content"
+  ✓ ✓ Done [369ms]
+
+─── Turn 32/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1671 in, 0 cc, 6047 cr, 92 out
+▶ ./scripts/ab click @e7
+  ✓ ✓ Done [380ms]
+
+─── Turn 33/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1802 in, 0 cc, 6047 cr, 101 out
+▶ ./scripts/ab snapshot -i -c
+  ✓ - heading "Task Manager — VERIFY_SPA_PAGE_99999" [level=1, ref=e1]
+       - button "All Tasks" [ref=e2] (+17 lines) [367ms]
+
+─── Turn 34/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1696 in, 0 cc, 6047 cr, 169 out
+▶ ./scripts/runner step-end 1 4 answer "Added new task 'Test dynamic content' t...
+  ✓ Recorded 1.4 answer
+       Verified: Step 1.4 = pass [1.691s]
+
+─── Turn 35/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1968 in, 0 cc, 6047 cr, 100 out
+▶ ./scripts/ab back
+  ✓ http://fixtures/search.html [875ms]
+
+─── Turn 36/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1594 in, 0 cc, 6047 cr, 107 out
+▶ ./scripts/ab snapshot -i -c
+  ✓ - link "Home" [ref=e2]
+       - link "Search" [ref=e3] (+5 lines) [365ms]
+
+─── Turn 37/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1857 in, 0 cc, 6047 cr, 147 out
+▶ ./scripts/runner step-end 1 5 answer "Used browser back navigation to return ...
+  ✓ Recorded 1.5 answer
+       Verified: Step 1.5 = pass [1.683s]
+
+─── Turn 38/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1843 in, 0 cc, 6047 cr, 96 out
+Wrote <repo>/tests/benchmark/results/agent_browser_benchmark_20260420_140522_summary.md
+
+# Benchmark Summary
+
+| Metric | Value |
+|--------|-------|
+| Type | agent-browser |
+| Model | claude-haiku-4-5-20251001 |
+| Steps Answered | 10 |
+| Execution Failed | 0 |
+| Execution Skipped | 0 |
+| Answer Rate | 100% |
+| Verified Passed | 10 |
+| Verified Failed | 0 |
+| Verified Skipped | 0 |
+| Pending Verification | 0 |
+| Verification Pass Rate | 100% |
+| Tool Calls | 63 |
+
+## Run Usage
+
+| Metric | Value |
+|--------|-------|
+| Source | anthropic-messages |
+| Provider | anthropic |
+| API Requests | 38 |
+| Input Tokens (uncached) | 57188 |
+| Cache Creation Input Tokens | 6047 |
+| Cache Read Input Tokens | 223739 |
+| Total Input Tokens | 286974 |
+| Output Tokens | 4337 |
+| Total Tokens | 291311 |
+
+## Pending Verification
+
+- none
+
+## Failed Steps
+
+- none
+
+## Verification Failures
+
+- none
+
+[run-usage] provider=anthropic requests=38 input=57188 cache_create=6047 cache_read=223739 output=4337 total=291311
+
+══ Benchmark result ══
+  answered:             10
+  execution failed:     0
+  execution skipped:    0
+  verified passed:      10
+  verified failed:      0
+  verified skipped:     0
+  pending verification: 0
+  tool calls:           63
+  verification pass rate: 100.0% (10/10)

@@ -1,0 +1,61 @@
+version: 2
+
+before:
+  hooks:
+    - ./scripts/build-dashboard.sh
+
+builds:
+  - main: ./cmd/pinchtab
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  # Output bare binaries directly (no archives)
+  # Note: goreleaser auto-adds .exe for Windows, so don't include it in the template
+  - format: binary
+    name_template: "pinchtab-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+brews:
+  - name: pinchtab
+    repository:
+      owner: pinchtab
+      name: homebrew-tap
+      branch: "brew-{{ .ProjectName }}-{{ .Version }}"
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: pinchtab
+          name: homebrew-tap
+          branch: main
+    directory: Formula
+    homepage: "https://pinchtab.com"
+    description: "High-performance browser automation bridge and multi-instance orchestrator for AI agents"
+    license: "MIT"
+    test: |
+      system "#{bin}/pinchtab version"
+    install: |
+      bin.install Dir["pinchtab*"].first => "pinchtab"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^ci:'
+      - '^chore:'
+
+release:
+  github:
+    owner: pinchtab
+    name: pinchtab

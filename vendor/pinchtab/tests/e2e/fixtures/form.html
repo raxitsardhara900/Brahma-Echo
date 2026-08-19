@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>E2E Test - Form</title>
+</head>
+<body>
+  <h1>Form Test</h1>
+  <form id="test-form" action="/submit" method="POST">
+    <div>
+      <label for="username">Username:</label>
+      <input type="text" id="username" name="username" placeholder="Enter username">
+    </div>
+    <div>
+      <label for="email">Email:</label>
+      <input type="email" id="email" name="email" placeholder="Enter email">
+    </div>
+    <div>
+      <label for="password">Password:</label>
+      <input type="password" id="password" name="password">
+    </div>
+    <div>
+      <label for="country">Country:</label>
+      <select id="country" name="country">
+        <option value="">Select country</option>
+        <option value="us">United States</option>
+        <option value="uk">United Kingdom</option>
+        <option value="de">Germany</option>
+        <option value="it">Italy</option>
+      </select>
+    </div>
+    <div>
+      <label>
+        <input type="checkbox" id="terms" name="terms">
+        I agree to the terms
+      </label>
+    </div>
+    <div>
+      <button type="submit" id="submit-btn">Submit</button>
+      <button type="reset" id="reset-btn">Reset</button>
+    </div>
+  </form>
+  <div id="result"></div>
+  <script>
+    document.getElementById('test-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      document.getElementById('result').textContent = 'Form submitted!';
+    });
+  </script>
+</body>
+</html>

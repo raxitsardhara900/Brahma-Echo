@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>E2E Test - Buttons</title>
+  <style>
+    .counter { font-size: 2em; margin: 20px 0; }
+    button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>Buttons Test</h1>
+
+  <section id="counter-section">
+    <h2>Counter</h2>
+    <div class="counter">Count: <span id="count">0</span></div>
+    <button id="increment">Increment</button>
+    <button id="decrement">Decrement</button>
+    <button id="reset">Reset</button>
+  </section>
+
+  <section id="toggle-section">
+    <h2>Toggle</h2>
+    <button id="toggle-btn">Toggle visibility</button>
+    <div id="toggle-content" style="display: block;">
+      <p>This content can be toggled.</p>
+    </div>
+  </section>
+
+  <section id="alert-section">
+    <h2>Messages</h2>
+    <button id="show-message">Show Message</button>
+    <div id="message" style="display: none; padding: 10px; background: #e0f0e0; margin-top: 10px;">
+      Message displayed successfully!
+    </div>
+  </section>
+
+  <section id="dialog-section">
+    <h2>JavaScript Dialogs</h2>
+    <button id="trigger-alert">Trigger Alert</button>
+    <button id="trigger-confirm">Trigger Confirm</button>
+    <button id="trigger-prompt">Trigger Prompt</button>
+    <div id="dialog-result" style="padding: 10px; margin-top: 10px;"></div>
+  </section>
+
+  <script>
+    let count = 0;
+    const countEl = document.getElementById('count');
+
+    document.getElementById('increment').addEventListener('click', () => {
+      count++;
+      countEl.textContent = count;
+    });
+
+    document.getElementById('decrement').addEventListener('click', () => {
+      count--;
+      countEl.textContent = count;
+    });
+
+    document.getElementById('reset').addEventListener('click', () => {
+      count = 0;
+      countEl.textContent = count;
+    });
+
+    document.getElementById('toggle-btn').addEventListener('click', () => {
+      const content = document.getElementById('toggle-content');
+      content.style.display = content.style.display === 'none' ? 'block' : 'none';
+    });
+
+    document.getElementById('show-message').addEventListener('click', () => {
+      document.getElementById('message').style.display = 'block';
+    });
+
+    document.getElementById('trigger-alert').addEventListener('click', () => {
+      alert('E2E_ALERT_MESSAGE');
+      document.getElementById('dialog-result').textContent = 'ALERT_DISMISSED';
+    });
+
+    document.getElementById('trigger-confirm').addEventListener('click', () => {
+      const result = confirm('E2E_CONFIRM_MESSAGE');
+      document.getElementById('dialog-result').textContent = result ? 'CONFIRM_ACCEPTED' : 'CONFIRM_DISMISSED';
+    });
+
+    document.getElementById('trigger-prompt').addEventListener('click', () => {
+      const result = prompt('E2E_PROMPT_MESSAGE', 'default');
+      document.getElementById('dialog-result').textContent = result !== null ? 'PROMPT_VALUE_' + result : 'PROMPT_CANCELLED';
+    });
+  </script>
+</body>
+</html>

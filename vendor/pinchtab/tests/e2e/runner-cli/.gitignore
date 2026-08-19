@@ -1,0 +1,3 @@
+# The pinchtab binary is built by CI before docker build
+# Don't commit it to the repo
+pinchtab

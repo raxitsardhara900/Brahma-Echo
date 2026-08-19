@@ -1,0 +1,351 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.8.0, without v prefix)'
+        required: true
+      ref:
+        description: 'Git ref to release. Defaults to main.'
+        required: false
+        default: 'main'
+
+env:
+  GORELEASER_VERSION: v2.14.3
+
+permissions:
+  contents: write
+
+concurrency:
+  group: prepare-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    uses: ./.github/workflows/reusable-validate-release.yml
+    with:
+      version: ${{ inputs.version }}
+      ref: ${{ inputs.ref }}
+
+  release-secret-checks:
+    needs: validate
+    uses: ./.github/workflows/reusable-validate-release-secrets.yml
+    secrets:
+      HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USER }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+
+  go-checks:
+    needs: validate
+    uses: ./.github/workflows/reusable-go.yml
+    with:
+      ref: ${{ needs.validate.outputs.sha }}
+
+  dashboard-checks:
+    needs: validate
+    uses: ./.github/workflows/reusable-dashboard.yml
+    with:
+      ref: ${{ needs.validate.outputs.sha }}
+
+  docs-checks:
+    needs: validate
+    uses: ./.github/workflows/reusable-docs.yml
+    with:
+      ref: ${{ needs.validate.outputs.sha }}
+
+  npm-checks:
+    needs: validate
+    uses: ./.github/workflows/reusable-npm.yml
+    with:
+      ref: ${{ needs.validate.outputs.sha }}
+      version: ${{ needs.validate.outputs.version }}
+
+  plugin-checks:
+    needs: validate
+    uses: ./.github/workflows/reusable-plugin.yml
+    with:
+      ref: ${{ needs.validate.outputs.sha }}
+
+  e2e-api-extended:
+    needs: validate
+    uses: ./.github/workflows/reusable-e2e.yml
+    with:
+      ref: ${{ needs.validate.outputs.sha }}
+      suite: api-extended
+      summary_title: Release E2E (API)
+      timeout_minutes: 30
+
+  e2e-cli-extended:
+    needs: validate
+    uses: ./.github/workflows/reusable-e2e.yml
+    with:
+      ref: ${{ needs.validate.outputs.sha }}
+      suite: cli-extended
+      summary_title: Release E2E (CLI)
+      timeout_minutes: 30
+
+  e2e-infra-extended:
+    needs: validate
+    uses: ./.github/workflows/reusable-e2e.yml
+    with:
+      ref: ${{ needs.validate.outputs.sha }}
+      suite: infra-extended
+      summary_title: Release E2E (Infra)
+      timeout_minutes: 35
+
+  # Non-chrome browser parity (cloak, ghost-chrome). Advisory, like the chrome e2e jobs.
+  e2e-extended-browsers:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [cloak, ghost-chrome]
+        suite: [api-extended, cli-extended, infra-extended]
+    uses: ./.github/workflows/reusable-e2e.yml
+    with:
+      ref: ${{ needs.validate.outputs.sha }}
+      suite: ${{ matrix.suite }}
+      browser: ${{ matrix.browser }}
+      summary_title: Release E2E (${{ matrix.suite }} / ${{ matrix.browser }})
+      timeout_minutes: 40
+
+  smoke:
+    needs: validate
+    uses: ./.github/workflows/reusable-smoke.yml
+    with:
+      ref: ${{ needs.validate.outputs.sha }}
+
+  publish-dry-run:
+    name: Release Dry Runs
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.validate.outputs.sha }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install tygo
+        run: go install github.com/gzuidhof/tygo@latest
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: bun install --frozen-lockfile
+
+      - name: Run GoReleaser snapshot
+        run: |
+          curl -sfL https://goreleaser.com/static/run | VERSION="$GORELEASER_VERSION" bash -s -- release --clean --snapshot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+      - name: Dry-run npm publish
+        working-directory: npm
+        run: |
+          CURRENT="$(jq -r .version package.json)"
+          DESIRED="${{ needs.validate.outputs.version }}"
+          if [ "$CURRENT" != "$DESIRED" ]; then
+            npm version "$DESIRED" --no-git-tag-version
+          else
+            echo "Version already correct: $CURRENT"
+          fi
+
+          npm ci --ignore-scripts
+          npm run build
+          npm publish --dry-run
+
+  plugin-publish-dry-run:
+    name: Plugin Publish Dry Run
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.validate.outputs.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Sync plugin version with release
+        working-directory: plugin
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          CURRENT=$(node -pe "require('./package.json').version")
+          if [ "$CURRENT" != "$VERSION" ]; then
+            npm version "$VERSION" --no-git-tag-version
+            node -e "
+              const fs = require('fs');
+              const p = JSON.parse(fs.readFileSync('openclaw.plugin.json', 'utf8'));
+              p.version = '$VERSION';
+              fs.writeFileSync('openclaw.plugin.json', JSON.stringify(p, null, 2) + '\n');
+            "
+          else
+            echo "Version already correct: $CURRENT"
+          fi
+
+      - name: Install plugin deps
+        working-directory: plugin
+        run: npm install --ignore-scripts --no-package-lock
+
+      - name: Dry-run npm pack (validates prepack chain + files allowlist)
+        working-directory: plugin
+        run: |
+          npm pack --dry-run
+          # Real pack so we know prepack actually emits dist/ before clawhub validates
+          npm pack
+
+      - name: Install ClawHub CLI
+        run: npm i -g clawhub
+
+      - name: Authenticate with ClawHub
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+        run: clawhub login --token "$CLAWHUB_TOKEN" --no-browser
+
+      - name: Dry-run ClawHub publish
+        working-directory: plugin
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          clawhub package publish . \
+            --family code-plugin \
+            --version "$VERSION" \
+            --changelog "Release v$VERSION" \
+            --tags latest \
+            --source-repo pinchtab/pinchtab \
+            --source-commit "$(git rev-parse HEAD)" \
+            --source-ref "$TAG" \
+            --source-path plugin \
+            --dry-run
+
+  approval:
+    name: Manual Approval
+    needs:
+      - validate
+      - release-secret-checks
+      - go-checks
+      - dashboard-checks
+      - docs-checks
+      - npm-checks
+      - plugin-checks
+      - e2e-api-extended
+      - e2e-cli-extended
+      - e2e-infra-extended
+      - e2e-extended-browsers
+      - smoke
+      - publish-dry-run
+      - plugin-publish-dry-run
+    if: >-
+      always() && !cancelled()
+      && needs.validate.result == 'success'
+      && needs.release-secret-checks.result == 'success'
+      && needs.go-checks.result == 'success'
+      && needs.dashboard-checks.result == 'success'
+      && needs.docs-checks.result == 'success'
+      && needs.npm-checks.result == 'success'
+      && needs.plugin-checks.result == 'success'
+      && needs.publish-dry-run.result == 'success'
+      && needs.plugin-publish-dry-run.result == 'success'
+    runs-on: ubuntu-latest
+    environment:
+      name: release-approval
+    steps:
+      - name: Report check results
+        run: |
+          echo "## Pre-Release Check Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Check | Status | Passed | Failed | Test time | Wall time |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|--------|--------|--------|-----------|-----------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Release secrets | ✅ success | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Go | ✅ success | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Dashboard | ✅ success | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Docs | ✅ success | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| npm | ✅ success | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Plugin | ✅ success | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Publish dry run | ✅ success | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Plugin publish dry run | ✅ success | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Smoke | ${{ needs.smoke.result == 'success' && '✅' || '⚠️ ' }}${{ needs.smoke.result }} | ${{ needs.smoke.outputs.passed || '-' }}/${{ needs.smoke.outputs.tests || '-' }} | ${{ needs.smoke.outputs.failed || '-' }} | ${{ needs.smoke.outputs.test_time || '-' }} | ${{ needs.smoke.outputs.overall_wall_time || '-' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| E2E API | ${{ needs.e2e-api-extended.result == 'success' && '✅' || '⚠️ ' }}${{ needs.e2e-api-extended.result }} | ${{ needs.e2e-api-extended.outputs.passed || '-' }}/${{ needs.e2e-api-extended.outputs.tests || '-' }} | ${{ needs.e2e-api-extended.outputs.failed || '-' }} | ${{ needs.e2e-api-extended.outputs.test_time || '-' }} | ${{ needs.e2e-api-extended.outputs.overall_wall_time || '-' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| E2E CLI | ${{ needs.e2e-cli-extended.result == 'success' && '✅' || '⚠️ ' }}${{ needs.e2e-cli-extended.result }} | ${{ needs.e2e-cli-extended.outputs.passed || '-' }}/${{ needs.e2e-cli-extended.outputs.tests || '-' }} | ${{ needs.e2e-cli-extended.outputs.failed || '-' }} | ${{ needs.e2e-cli-extended.outputs.test_time || '-' }} | ${{ needs.e2e-cli-extended.outputs.overall_wall_time || '-' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| E2E Infra | ${{ needs.e2e-infra-extended.result == 'success' && '✅' || '⚠️ ' }}${{ needs.e2e-infra-extended.result }} | ${{ needs.e2e-infra-extended.outputs.passed || '-' }}/${{ needs.e2e-infra-extended.outputs.tests || '-' }} | ${{ needs.e2e-infra-extended.outputs.failed || '-' }} | ${{ needs.e2e-infra-extended.outputs.test_time || '-' }} | ${{ needs.e2e-infra-extended.outputs.overall_wall_time || '-' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| E2E cloak + ghost-chrome (advisory) | ${{ needs.e2e-extended-browsers.result == 'success' && '✅' || '⚠️ ' }}${{ needs.e2e-extended-browsers.result }} | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${{ needs.e2e-api-extended.result }}" != "success" ] || [ "${{ needs.e2e-cli-extended.result }}" != "success" ] || [ "${{ needs.e2e-infra-extended.result }}" != "success" ] || [ "${{ needs.e2e-extended-browsers.result }}" != "success" ] || [ "${{ needs.smoke.result }}" != "success" ]; then
+            echo "⚠️ **Some checks failed — review the E2E job summaries and uploaded result artifacts before approving.**" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Release candidate: **${{ needs.validate.outputs.tag }}** at \`${{ needs.validate.outputs.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  create-tag:
+    name: Create Release Tag
+    needs:
+      - validate
+      - approval
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.validate.outputs.sha }}
+
+      - name: Create and push tag
+        run: |
+          TAG="${{ needs.validate.outputs.tag }}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists on origin" >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "refs/tags/$TAG"
+
+      - name: Summarize tag creation
+        run: |
+          echo "## Release Tag Created" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tag: ${{ needs.validate.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Commit: \`${{ needs.validate.outputs.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Publishing continues in this workflow from the approved tag." >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish Release
+    needs:
+      - validate
+      - create-tag
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/reusable-release-publish.yml
+    with:
+      ref: refs/tags/${{ needs.validate.outputs.tag }}
+      tag: ${{ needs.validate.outputs.tag }}
+    secrets: inherit

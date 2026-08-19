@@ -1,0 +1,422 @@
+package server
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/pinchtab/pinchtab/internal/activity"
+	"github.com/pinchtab/pinchtab/internal/authn"
+	"github.com/pinchtab/pinchtab/internal/bridge"
+	_ "github.com/pinchtab/pinchtab/internal/browsers/all"
+	"github.com/pinchtab/pinchtab/internal/browsers/providerhooks"
+	"github.com/pinchtab/pinchtab/internal/browsersession"
+	"github.com/pinchtab/pinchtab/internal/cli"
+	"github.com/pinchtab/pinchtab/internal/config"
+	"github.com/pinchtab/pinchtab/internal/dashboard"
+	"github.com/pinchtab/pinchtab/internal/handlers"
+	"github.com/pinchtab/pinchtab/internal/httpx"
+	"github.com/pinchtab/pinchtab/internal/orchestrator"
+	"github.com/pinchtab/pinchtab/internal/profiles"
+	"github.com/pinchtab/pinchtab/internal/scheduler"
+	"github.com/pinchtab/pinchtab/internal/session"
+	"github.com/pinchtab/pinchtab/internal/strategy"
+	_ "github.com/pinchtab/pinchtab/internal/strategy/alwayson"
+	_ "github.com/pinchtab/pinchtab/internal/strategy/autorestart"
+	_ "github.com/pinchtab/pinchtab/internal/strategy/explicit"
+	_ "github.com/pinchtab/pinchtab/internal/strategy/noinstance"
+	_ "github.com/pinchtab/pinchtab/internal/strategy/simple"
+)
+
+var exitProcess = os.Exit
+
+// fatalStartup writes styled operator output with hints, not a log record.
+func fatalStartup(stage string, err error) {
+	fmt.Fprintln(os.Stderr, cli.StyleStderr(cli.ErrorStyle, fmt.Sprintf("pinchtab: %s: %v", stage, err)))
+	for _, hint := range startupFatalHints(err) {
+		fmt.Fprintln(os.Stderr, cli.StyleStderr(cli.MutedStyle, "         "+hint))
+	}
+	exitProcess(1)
+}
+
+func startupFatalHints(err error) []string {
+	if !errors.Is(err, syscall.EADDRINUSE) {
+		return nil
+	}
+	return []string{
+		"Another process is already listening on that address.",
+		"Check for a running service with `pinchtab daemon`, or stop it with `pinchtab server stop`.",
+	}
+}
+
+func RunDashboard(cfg *config.RuntimeConfig, version string) {
+	providerhooks.CleanupProfile(config.NormalizeBrowser(cfg.DefaultBrowser), cfg.ProfileDir)
+
+	dashPort := cfg.Port
+	startedAt := time.Now()
+
+	profilesDir := cfg.ProfilesBaseDir
+	if err := os.MkdirAll(profilesDir, 0755); err != nil {
+		fatalStartup("cannot create profiles dir", err)
+	}
+
+	profMgr := profiles.NewProfileManager(profilesDir)
+	dash := dashboard.NewDashboard(nil)
+	orch := orchestrator.NewOrchestrator(profilesDir)
+	orch.ApplyRuntimeConfig(cfg)
+	orch.SetProfileManager(profMgr)
+	profMgr.SetInstanceLookup(func(profileID string) (string, bool) {
+		return profileInstanceHolder(orch.List(), profileID)
+	})
+	dash.SetInstanceLister(orch)
+	dash.SetMonitoringSource(orch)
+	dash.SetServerMetricsProvider(func() dashboard.MonitoringServerMetrics {
+		snapshot := handlers.SnapshotMetrics()
+		return dashboard.MonitoringServerMetrics{
+			GoHeapAllocMB:   MetricFloat(snapshot["goHeapAllocMB"]),
+			GoNumGoroutine:  MetricInt(snapshot["goNumGoroutine"]),
+			RateBucketHosts: MetricInt(snapshot["rateBucketHosts"]),
+		}
+	})
+	configAPI := dashboard.NewConfigAPI(cfg, orch, profMgr, orch, dash, version, startedAt)
+	sessions := browsersession.NewManager(dashboard.BrowserSessionConfig(cfg))
+	configAPI.SetSessionManager(sessions)
+	authAPI := dashboard.NewAuthAPI(cfg, sessions)
+
+	sessionStore := session.NewStore(session.Config{
+		Enabled:     cfg.Sessions.Agent.Enabled,
+		Mode:        cfg.Sessions.Agent.Mode,
+		IdleTimeout: cfg.Sessions.Agent.IdleTimeout,
+		MaxLifetime: cfg.Sessions.Agent.MaxLifetime,
+		PersistPath: filepath.Join(cfg.StateDir, "sessions.json"),
+	})
+	var sessionAPI *dashboard.SessionAPI
+	if sessionStore.Enabled() {
+		sessionAPI = dashboard.NewSessionAPI(sessionStore, cfg.BrowsersAvailable)
+		sessionAPI.SetSessionTabSource(orch.SessionTabIDs)
+	}
+
+	orch.OnEvent(func(evt orchestrator.InstanceEvent) {
+		dash.BroadcastSystemEvent(dashboard.SystemEvent{
+			Type:     evt.Type,
+			Instance: evt.Instance,
+		})
+	})
+
+	// Print machine-readable READY line when first instance starts.
+	readyOnce := &sync.Once{}
+	orch.OnEvent(func(evt orchestrator.InstanceEvent) {
+		if evt.Type == "instance.started" && evt.Instance != nil {
+			readyOnce.Do(func() {
+				if dashPort != "9867" {
+					fmt.Printf("READY port=%s\n", dashPort)
+				} else {
+					fmt.Println("READY")
+				}
+				fmt.Println("HINT: export PINCHTAB_SESSION=$(pinchtab session create --agent-id myagent) && pinchtab nav https://pinchtab.com --snap")
+			})
+		}
+	})
+
+	// Drop identity → instance bindings and the instance's scoped current
+	// tab when a session is revoked, expires, or is pruned.
+	sessionStore.OnLifecycle(orch.SessionLifecycleHook())
+	actStore, err := activity.NewRecorder(activity.Config{
+		Enabled:       cfg.Observability.Activity.Enabled,
+		RetentionDays: cfg.Observability.Activity.RetentionDays,
+		Events: activity.EventSourceConfig{
+			Dashboard:    cfg.Observability.Activity.Events.Dashboard,
+			Server:       cfg.Observability.Activity.Events.Server,
+			Bridge:       cfg.Observability.Activity.Events.Bridge,
+			Orchestrator: cfg.Observability.Activity.Events.Orchestrator,
+			Scheduler:    cfg.Observability.Activity.Events.Scheduler,
+			MCP:          cfg.Observability.Activity.Events.MCP,
+			Other:        cfg.Observability.Activity.Events.Other,
+		},
+	}, cfg.ActivityLogDir())
+	if err != nil {
+		fatalStartup("activity store", err)
+	}
+	profMgr.SetActivityRecorder(actStore)
+
+	mux := http.NewServeMux()
+
+	if err := dash.LoadPersistedAgentActivity(actStore); err != nil {
+		slog.Warn("restore dashboard agent activity", "err", err)
+	}
+
+	liveActivity := newDashboardActivityRecorder(actStore, dash)
+	dash.RegisterAdminRoutes(mux, dashboard.AdminDeps{
+		ConfigAPI:     configAPI,
+		AuthAPI:       authAPI,
+		SessionAPI:    sessionAPI,
+		Activity:      liveActivity,
+		ServerMetrics: handlers.SnapshotMetrics,
+	})
+	profMgr.RegisterHandlers(mux)
+	if !sessionStore.Enabled() {
+		// Without this the family is a bare mux 404, indistinguishable from a typo and
+		// from bridge mode — which is what made the CLI print a config remedy at users
+		// for whom no config could work.
+		RegisterSessionsDisabled(mux)
+	}
+
+	syncCtx, syncCancel := context.WithCancel(context.Background())
+	go func() {
+		const (
+			minInterval = 1 * time.Second
+			maxInterval = 10 * time.Second
+		)
+		interval := minInterval
+		timer := time.NewTimer(interval)
+		defer timer.Stop()
+
+		// Use tail reader for O(new lines) polling instead of full-file rescan.
+		type tailProvider interface {
+			NewTailReader(source string) *activity.TailReader
+		}
+		var tailReader *activity.TailReader
+		if tp, ok := actStore.(tailProvider); ok {
+			tailReader = tp.NewTailReader("client")
+		}
+
+		lastSync := time.Now().UTC()
+		for {
+			select {
+			case <-syncCtx.Done():
+				return
+			case <-timer.C:
+				var hasNew bool
+				var err error
+
+				if tailReader != nil {
+					var n int
+					n, err = dash.IngestTail(tailReader)
+					hasNew = n > 0
+				} else {
+					var nextSync time.Time
+					nextSync, err = dash.IngestPersistedAgentActivity(actStore, lastSync)
+					if !nextSync.IsZero() && nextSync.After(lastSync) {
+						lastSync = nextSync
+						hasNew = true
+					}
+				}
+
+				if err != nil {
+					slog.Warn("sync dashboard agent activity", "err", err)
+					timer.Reset(interval)
+					continue
+				}
+				if hasNew {
+					interval = minInterval
+				} else {
+					interval = min(interval*2, maxInterval)
+				}
+				timer.Reset(interval)
+			}
+		}
+	}()
+
+	strategyName := cfg.Strategy
+	if strategyName == "" {
+		strategyName = "always-on"
+	}
+	activeStrategy, err := strategy.New(strategyName)
+	if err != nil {
+		slog.Warn("unknown strategy, falling back to always-on", "strategy", strategyName, "err", err)
+		activeStrategy, err = strategy.New("always-on")
+		if err != nil {
+			fatalStartup("failed to initialize fallback strategy always-on", err)
+		}
+	}
+	if runtimeAware, ok := activeStrategy.(strategy.RuntimeConfigAware); ok {
+		runtimeAware.SetRuntimeConfig(cfg)
+	}
+	if setter, ok := activeStrategy.(strategy.OrchestratorAware); ok {
+		setter.SetOrchestrator(orch)
+	}
+	activeStrategy.RegisterRoutes(mux)
+	stratName := activeStrategy.Name()
+
+	allocPolicy := cfg.AllocationPolicy
+	if allocPolicy == "" {
+		allocPolicy = "none"
+	}
+
+	listenStatus := "starting"
+	if cli.IsDaemonRunning() && CheckPinchTabRunning(dashPort, cfg.Token) {
+		listenStatus = "running"
+	}
+
+	if cfg.VerboseBanner {
+		cli.PrintStartupBanner(cfg, cli.StartupBannerOptions{
+			Mode:         "server",
+			ListenAddr:   cfg.Bind + ":" + dashPort,
+			ListenStatus: listenStatus,
+			PublicURL:    fmt.Sprintf("http://localhost:%s", dashPort),
+			Strategy:     stratName,
+			Allocation:   allocPolicy,
+		})
+	}
+
+	if listenStatus == "running" {
+		fmt.Println(cli.StyleStdout(cli.WarningStyle, fmt.Sprintf("  pinchtab already running as a daemon on port %s", dashPort)))
+		fmt.Println(cli.StyleStdout(cli.MutedStyle, "  Stop the daemon first with `pinchtab daemon stop` to run in the foreground."))
+		fmt.Println()
+		os.Exit(0)
+	}
+
+	slog.Info("orchestration", "strategy", stratName, "allocation", allocPolicy)
+
+	var sched *scheduler.Scheduler
+	if cfg.Scheduler.Enabled {
+		schedCfg := scheduler.ConfigFromRuntime(cfg.Scheduler)
+
+		resolver := &scheduler.ManagerResolver{Mgr: orch.InstanceManager()}
+		sched = scheduler.New(schedCfg, resolver)
+		sched.RegisterHandlers(mux)
+		slog.Info("scheduler enabled (on-demand)", "strategy", schedCfg.Strategy, "workers", schedCfg.WorkerCount)
+	}
+
+	mux.HandleFunc("GET /health", configAPI.HandleHealth)
+	registerFrontDoorMetrics(mux)
+	mux.HandleFunc("GET /health/background", func(w http.ResponseWriter, r *http.Request) {
+		httpx.JSON(w, http.StatusOK, map[string]string{
+			"status":  "ok",
+			"mode":    "dashboard",
+			"version": version,
+			"marker":  cfg.BackgroundMarker,
+		})
+	})
+
+	handler := FrontDoorHandler(cfg, liveActivity, sessions, sessionStore, mux)
+	if cfg.VerboseBanner {
+		cli.LogSecurityWarnings(cfg)
+	}
+
+	srv := &http.Server{
+		Addr:              cfg.Bind + ":" + dashPort,
+		Handler:           handler,
+		MaxHeaderBytes:    maxHeaderBytes,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		ReadTimeout:       serverReadTimeout,
+		WriteTimeout:      serverWriteTimeout,
+		IdleTimeout:       serverIdleTimeout,
+	}
+
+	if err := activeStrategy.Start(context.Background()); err != nil {
+		slog.Error("strategy start failed", "strategy", activeStrategy.Name(), "err", err)
+	}
+
+	maintenanceCtx, maintenanceCancel := context.WithCancel(context.Background())
+	go orch.RunMaintenance(maintenanceCtx)
+	go sessionStore.RunMaintenance(maintenanceCtx)
+
+	shutdownOnce := &sync.Once{}
+	doShutdown := func() {
+		shutdownOnce.Do(func() {
+			slog.Info("shutting down dashboard...")
+			// launchd may SIGKILL us shortly after SIGTERM; kill browser
+			// processes first so a mid-teardown SIGKILL can't orphan them.
+			// The hooks are idempotent process sweeps.
+			providerhooks.ShutdownAll()
+			if err := activeStrategy.Stop(); err != nil {
+				slog.Warn("strategy stop failed", "err", err)
+			}
+			if sched != nil {
+				sched.Stop()
+			}
+			syncCancel()
+			maintenanceCancel()
+			dash.Shutdown()
+			gracefulShutdownWithCap(orch, bridgeShutdownTotalCap)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := srv.Shutdown(ctx); err != nil {
+				slog.Error("shutdown http", "err", err)
+			}
+		})
+	}
+
+	mux.HandleFunc("POST /shutdown", func(w http.ResponseWriter, r *http.Request) {
+		authn.AuditLog(r, "system.shutdown_requested")
+		httpx.JSON(w, 200, map[string]string{"status": "shutting down"})
+		go doShutdown()
+	})
+
+	go func() {
+		sig := make(chan os.Signal, 2)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		<-sig
+		// Synchronous kill before the goroutine hop: the supervisor may not
+		// grant us even the scheduling delay of go doShutdown().
+		providerhooks.ShutdownAll()
+		go doShutdown()
+		<-sig
+		slog.Warn("force shutdown requested")
+		orch.ForceShutdown()
+		os.Exit(130)
+	}()
+
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		fatalStartup("cannot listen on "+srv.Addr, err)
+	}
+	slog.Info("dashboard started", "port", dashPort)
+	if err := srv.Serve(listener); err != http.ErrServerClosed {
+		fatalStartup("server error", err)
+	}
+}
+
+const bridgeShutdownTotalCap = 8 * time.Second
+
+func gracefulShutdownWithCap(orch *orchestrator.Orchestrator, cap time.Duration) bool {
+	if orch == nil {
+		return true
+	}
+	done := make(chan struct{})
+	go func() {
+		orch.Shutdown()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(cap):
+		slog.Warn("graceful bridge shutdown exceeded cap, escalating", "cap", cap)
+		return false
+	}
+}
+
+// heldInstanceStatuses are the instance states that count as holding a profile. STOPPING is
+// in the set deliberately: the browser still has the directory open while it winds down, so
+// deleting then is the same loss as deleting while it runs. STARTING likewise — the profile
+// is claimed before the process reports running.
+//
+// This is the safety-critical half of the profile guard, so it is a named function rather
+// than a closure inside RunDashboard: as a closure nothing could reach it, and the states it
+// matches were the one part of the guard no test could see.
+var heldInstanceStatuses = map[string]bool{"starting": true, "running": true, "stopping": true}
+
+// profileInstanceHolder reports the instance holding profileID, if any. It is the exact
+// derivation handed to ProfileManager.SetInstanceLookup at composition.
+func profileInstanceHolder(instances []bridge.Instance, profileID string) (string, bool) {
+	for _, inst := range instances {
+		if inst.ProfileID != profileID {
+			continue
+		}
+		if heldInstanceStatuses[inst.Status] {
+			return inst.ID, true
+		}
+	}
+	return "", false
+}

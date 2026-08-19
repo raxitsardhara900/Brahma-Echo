@@ -1,0 +1,658 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# dev — Pinchtab developer toolkit
+# Usage: dev [command] [sub]    Run a command directly
+#        dev                    Interactive picker
+
+cd "$(dirname "$0")"
+
+BOLD=$'\033[1m'
+ACCENT=$'\033[38;2;251;191;36m'
+MUTED=$'\033[38;2;90;100;128m'
+SUCCESS=$'\033[38;2;0;229;204m'
+ERROR=$'\033[38;2;230;57;70m'
+NC=$'\033[0m'
+
+# ── Commands ─────────────────────────────────────────────────────────
+# name:emoji:description
+COMMANDS=(
+  "build:🔨:Build the application"
+  "dev:🚀:Build & run"
+  "dashboard:🔥:Hot-reload dashboard development"
+  "run:🏃:Run the application"
+  "check:🧪:All checks"
+  "all:✅:check + test + e2e"
+  "full:✅:check + test + e2e-browsers + smoke-browsers"
+  "e2e-browsers:🐳:e2e extended across all 3 browsers"
+  "smoke-browsers:💨:e2e smoke across all 3 browsers (browser-sensitive only for cloak/ghost-chrome)"
+  "test unit:🔬:Go unit tests"
+  "test dashboard:🔬:Dashboard unit tests"
+  "test plugin:🔬:Plugin unit tests"
+  "e2e:🐳:E2E suites (add --browser=chrome|cloak|ghost-chrome to swap browser; default chrome)"
+  "  basic:🐳:Basic suite (api + cli + infra)"
+  "  extended:🐳:Extended suite (all extended)"
+  "  smoke:🐳:E2E smoke subset"
+  "  smoke-plugin:🐳:OpenClaw plugin Docker smoke"
+  "  api:🐳:API basic tests"
+  "  cli:🐳:CLI basic tests"
+  "  infra:🐳:Infra basic tests"
+  "  plugin:🐳:Plugin tests"
+  "  api-extended:🐳:API extended (multi-instance)"
+  "  cli-extended:🐳:CLI extended tests"
+  "  infra-extended:🐳:Infra extended (multi-instance)"
+  "  test <name>:🐳:Run a single E2E test by start_test name"
+  "smoke:💨:Docker smoke checks (use --browser=chrome|cloak|all or filter names)"
+  "  cloakbrowser:💨:Docker browser parity / CloakBrowser smoke"
+  "  cdp-attach:💨:Docker CDP attach smoke"
+  "  live-detection:💨:Advisory live detection-site probe (external network)"
+  "opt:⚡:Optimization baseline"
+  "  baseline:⚡:Run optimization baseline lane"
+  "bench:📊:Benchmark lanes"
+  "  pinchtab:📊:Run PinchTab benchmark via Anthropic Messages API"
+  "  agent-browser:📊:Run agent-browser benchmark via Anthropic Messages API"
+  "  browserbench:📊:Run BrowserBench CSV tasks through PinchTab"
+  "doctor:🩺:Setup dev environment"
+  "zombie:🧟:Run long Docker zombie-process soak smoke"
+  "install:📦:Build & install to ~/.local/bin (override with PINCHTAB_INSTALL_DIR)"
+  "  skills:📦:Symlink ./skills/* into ./.claude/skills (override with CLAUDE_SKILLS_DIR)"
+  "pack plugin:🎁:Build a ClawHub-ready plugin tarball (optionally pass <version>)"
+  "check go:🧪:Go only"
+  "check dashboard:🧪:Dashboard only"
+  "check npm:🧪:npm package only"
+  "check plugin:🧪:Plugin only"
+  "check security:🧪:Gosec security scan"
+  "check docs:🧪:Validate docs JSON"
+  "binary:📦:Build release-style binary into dist/"
+  "  all:📦:Build the full release binary matrix into dist/"
+  "format dashboard:🎨:Run Prettier on dashboard sources"
+)
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+show_help() {
+  echo ""
+  echo "  ${ACCENT}${BOLD}🦀 Pinchtab Dev${NC}"
+  echo ""
+  for cmd in "${COMMANDS[@]}"; do
+    IFS=':' read -r name emoji desc <<< "$cmd"
+    if [[ "$name" == " "* ]]; then
+      local trimmed="${name#"${name%%[![:space:]]*}"}"
+      printf "      ${BOLD}%-18s${NC} ${MUTED}%s${NC}\n" "$trimmed" "$desc"
+    else
+      printf "  ${SUCCESS}%s${NC} ${BOLD}%-18s${NC} ${MUTED}%s${NC}\n" "$emoji" "$name" "$desc"
+    fi
+  done
+  echo ""
+  echo "  ${MUTED}Usage: dev [command] [sub]${NC}"
+  echo ""
+}
+
+run_e2e_runner() {
+  local suite="extended"
+  local filter_seen=0
+  local -a runner_args=()
+
+  if [ "$#" -gt 0 ] && [[ "${1:-}" != --* && "${1:-}" != *=* ]]; then
+    suite="$1"
+    shift
+  fi
+
+  runner_args=(--suite "$suite")
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      filter=*)
+        runner_args+=(--filter "${1#filter=}")
+        filter_seen=1
+        ;;
+      test=*)
+        runner_args+=(--test "${1#test=}")
+        ;;
+      extra=*)
+        runner_args+=(--extra "${1#extra=}")
+        ;;
+      logs=*)
+        runner_args+=(--logs "${1#logs=}")
+        ;;
+      --suite|--filter|--test|--extra|--logs|--browser)
+        if [ "$#" -lt 2 ]; then
+          echo "  ${ERROR}Missing value for $1${NC}" >&2
+          exit 1
+        fi
+        local opt="$1"
+        local value="$2"
+        shift
+        runner_args+=("$opt" "$value")
+        [ "$opt" = "--filter" ] && filter_seen=1
+        ;;
+      --suite=*|--filter=*|--test=*|--extra=*|--logs=*|--browser=*)
+        local opt="${1%%=*}"
+        local value="${1#*=}"
+        runner_args+=("$opt" "$value")
+        [ "$opt" = "--filter" ] && filter_seen=1
+        ;;
+      browser=*)
+        runner_args+=(--browser "${1#browser=}")
+        ;;
+      --dry-run|--help|-h)
+        runner_args+=("$1")
+        ;;
+      --*)
+        runner_args+=("$1")
+        ;;
+      *)
+        if [ "$filter_seen" -ne 0 ]; then
+          echo "  ${ERROR}Unexpected extra e2e argument: $1${NC}" >&2
+          exit 1
+        fi
+        runner_args+=(--filter "$1")
+        filter_seen=1
+        ;;
+    esac
+    shift
+  done
+
+  exec env E2E_LOGS="${E2E_LOGS:-hide}" go run ./tests/tools/runner e2e "${runner_args[@]}"
+}
+
+# run_e2e_matrix TITLE  entry...
+#   Each entry is "label|suite|browser[|filter]".
+#   Uses indexed arrays (bash 3.2 compatible — no associative arrays).
+run_e2e_matrix() {
+  local title="$1"; shift
+  local -a mx_labels=() mx_statuses=() mx_tests=() mx_passed=() mx_failed=() mx_times=()
+  local mx_all_passed=true
+  local mx_idx=0
+
+  for entry in "$@"; do
+    local mx_label="" mx_suite="" mx_browser="" mx_filter=""
+    IFS='|' read -r mx_label mx_suite mx_browser mx_filter <<< "$entry"
+    mx_labels+=("$mx_label")
+
+    echo ""
+    echo "  ${ACCENT}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo "  ${ACCENT}${BOLD}🌐 ${mx_label}${NC}"
+    echo "  ${ACCENT}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+
+    # Clear stale per-suite summaries so aggregation only counts this run.
+    rm -f tests/e2e/results/summary-*.txt 2>/dev/null
+
+    local mx_start=$SECONDS
+    local -a mx_args=(--suite "$mx_suite" --browser="$mx_browser")
+    if [ -n "$mx_filter" ]; then
+      mx_args+=(--filter "$mx_filter")
+    fi
+    if env E2E_LOGS="${E2E_LOGS:-hide}" go run ./tests/tools/runner e2e "${mx_args[@]}"; then
+      mx_statuses+=("pass")
+    else
+      mx_statuses+=("fail")
+      mx_all_passed=false
+    fi
+    mx_times+=($(( SECONDS - mx_start )))
+
+    # Aggregate passed/failed from per-suite summary files (format: passed=N\nfailed=N).
+    local mx_p=0 mx_f=0 mx_found=false
+    for sf in tests/e2e/results/summary-*.txt; do
+      [ -f "$sf" ] || continue
+      local s_passed="" s_failed=""
+      s_passed=$(awk -F= '/^passed=/{print $2}' "$sf" 2>/dev/null)
+      s_failed=$(awk -F= '/^failed=/{print $2}' "$sf" 2>/dev/null)
+      if [ -n "$s_passed" ] || [ -n "$s_failed" ]; then
+        mx_p=$(( mx_p + ${s_passed:-0} ))
+        mx_f=$(( mx_f + ${s_failed:-0} ))
+        mx_found=true
+      fi
+    done
+    if $mx_found; then
+      mx_passed+=("$mx_p")
+      mx_failed+=("$mx_f")
+      mx_tests+=($(( mx_p + mx_f )))
+    else
+      mx_passed+=("?")
+      mx_failed+=("?")
+      mx_tests+=("?")
+    fi
+    mx_idx=$(( mx_idx + 1 ))
+  done
+
+  echo ""
+  echo "  ${ACCENT}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo "  ${ACCENT}${BOLD}📊 ${title}${NC}"
+  echo "  ${ACCENT}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo ""
+  printf "  ${BOLD}%-30s %-8s %8s %8s %8s %8s${NC}\n" "Set / Browser" "Status" "Tests" "Passed" "Failed" "Time"
+  printf "  ${MUTED}%-30s %-8s %8s %8s %8s %8s${NC}\n" "─────────────────────────────" "────────" "────────" "────────" "────────" "────────"
+  local i=0
+  while [ $i -lt $mx_idx ]; do
+    local mx_icon mx_color
+    if [ "${mx_statuses[$i]}" = "pass" ]; then
+      mx_icon="✓" mx_color="$SUCCESS"
+    else
+      mx_icon="✗" mx_color="$ERROR"
+    fi
+    printf "  ${mx_color}%-30s %-8s${NC} %8s %8s %8s %7ds\n" \
+      "${mx_labels[$i]}" "$mx_icon" "${mx_tests[$i]}" "${mx_passed[$i]}" "${mx_failed[$i]}" "${mx_times[$i]}"
+    i=$(( i + 1 ))
+  done
+  echo ""
+
+  if $mx_all_passed; then
+    echo "  ${SUCCESS}${BOLD}All sets passed!${NC}"
+  else
+    echo "  ${ERROR}${BOLD}Some sets failed.${NC}"
+    return 1
+  fi
+}
+
+run_command() {
+  local target="$1"
+
+  echo ""
+
+  case "$target" in
+    "check")
+      echo "  ${ACCENT}${BOLD}🧪 Running all checks (Go + Dashboard + Plugin)${NC}"
+      echo ""
+      bash scripts/check.sh
+      local go_exit=$?
+      echo ""
+      echo "  ${ACCENT}${BOLD}🧪 Dashboard checks${NC}"
+      echo ""
+      bash scripts/check-dashboard.sh
+      local dash_exit=$?
+      echo ""
+      echo "  ${ACCENT}${BOLD}🧪 Plugin checks${NC}"
+      echo ""
+      bash scripts/check-plugin.sh
+      local plugin_exit=$?
+      if [ $go_exit -ne 0 ] || [ $dash_exit -ne 0 ] || [ $plugin_exit -ne 0 ]; then exit 1; fi
+      exit 0
+      ;;
+    "check go")
+      echo "  ${ACCENT}${BOLD}🧪 Go checks${NC}"
+      echo ""
+      exec bash scripts/check.sh
+      ;;
+    "check dashboard")
+      echo "  ${ACCENT}${BOLD}🧪 Dashboard checks${NC}"
+      echo ""
+      exec bash scripts/check-dashboard.sh
+      ;;
+    "check npm")
+      echo "  ${ACCENT}${BOLD}🧪 npm package checks${NC}"
+      echo ""
+      exec bash scripts/check-npm.sh
+      ;;
+    "check plugin")
+      echo "  ${ACCENT}${BOLD}🧪 Plugin checks${NC}"
+      echo ""
+      exec bash scripts/check-plugin.sh
+      ;;
+    "check security")
+      echo "  ${ACCENT}${BOLD}🔒 Security scan${NC}"
+      echo ""
+      exec bash scripts/check-gosec.sh
+      ;;
+    "check docs")
+      echo "  ${ACCENT}${BOLD}📖 Docs validation${NC}"
+      echo ""
+      exec bash scripts/check-docs-json.sh
+      ;;
+    "format dashboard")
+      echo "  ${ACCENT}${BOLD}🎨 Dashboard formatting${NC}"
+      echo ""
+      exec bash -lc 'cd dashboard && if command -v bun >/dev/null 2>&1; then bun run format; else npx prettier --write '"'"'src/**/*.{ts,tsx,css}'"'"'; fi'
+      ;;
+    "test")
+      echo "  ${ACCENT}${BOLD}🔬 All tests${NC}"
+      echo ""
+      exec bash scripts/test.sh all
+      ;;
+    "test unit")
+      echo "  ${ACCENT}${BOLD}🔬 Go unit tests${NC}"
+      echo ""
+      exec bash scripts/test.sh unit
+      ;;
+    "test dashboard")
+      echo "  ${ACCENT}${BOLD}🔬 Dashboard tests${NC}"
+      echo ""
+      exec bash scripts/test.sh dashboard
+      ;;
+    "test plugin")
+      echo "  ${ACCENT}${BOLD}🔬 Plugin tests${NC}"
+      echo ""
+      cd plugin && exec npx tsx --test *.test.ts
+      ;;
+    "unit")
+      echo "  ${ACCENT}${BOLD}🔬 Unit tests${NC}"
+      echo ""
+      exec bash scripts/test.sh unit
+      ;;
+    "system")
+      echo "  ${ACCENT}${BOLD}🔬 System tests${NC}"
+      echo ""
+      exec bash scripts/test.sh system
+      ;;
+    "opt")
+      echo "  ${ACCENT}${BOLD}⚡ Optimization${NC}"
+      echo ""
+      exec bash scripts/dev-opt.sh help
+      ;;
+    "opt "*)
+      echo "  ${ACCENT}${BOLD}⚡ Optimization${NC}"
+      echo ""
+      local opt_args="${target#opt }"
+      exec bash scripts/dev-opt.sh ${opt_args}
+      ;;
+    "bench")
+      echo "  ${ACCENT}${BOLD}📊 Benchmark${NC}"
+      echo ""
+      exec bash scripts/dev-bench.sh help
+      ;;
+    "bench "*)
+      echo "  ${ACCENT}${BOLD}📊 Benchmark${NC}"
+      echo ""
+      local bench_args="${target#bench }"
+      exec bash scripts/dev-bench.sh ${bench_args}
+      ;;
+    "smoke"|"smoke "*)
+      echo "  ${ACCENT}${BOLD}💨 Smoke${NC}"
+      echo ""
+      local -a smoke_args=()
+      if [ "$target" != "smoke" ]; then
+        read -r -a smoke_args <<< "${target#smoke }"
+      fi
+      exec bash scripts/dev-smoke.sh "${smoke_args[@]}"
+      ;;
+    "e2e test")
+      echo "  ${ERROR}Missing test name. Usage: dev e2e test \"<name substring>\"${NC}"
+      exit 1
+      ;;
+    "e2e test "*)
+      local test_name="${target#e2e test }"
+      echo "  ${ACCENT}${BOLD}🎯 Single E2E test${NC}"
+      echo ""
+      exec env E2E_LOGS="${E2E_LOGS:-show}" bash scripts/dev-e2e.sh "$test_name"
+      ;;
+    "e2e smoke-plugin"|"e2e smoke-plugin "*)
+      echo "  ${ACCENT}${BOLD}🐳 OpenClaw plugin smoke${NC}"
+      echo ""
+      local -a smoke_args=()
+      if [ "$target" != "e2e smoke-plugin" ]; then
+        read -r -a smoke_args <<< "${target#e2e smoke-plugin }"
+      fi
+      exec bash tests/manual/openclaw-plugin-smoke/run.sh "${smoke_args[@]}"
+      ;;
+    "e2e smoke"|"e2e smoke "*)
+      echo "  ${ACCENT}${BOLD}🐳 E2E smoke${NC}"
+      echo ""
+      local -a smoke_args=("smoke")
+      if [ "$target" != "e2e smoke" ]; then
+        local -a extra_args=()
+        read -r -a extra_args <<< "${target#e2e smoke }"
+        smoke_args+=("${extra_args[@]}")
+      fi
+      run_e2e_runner "${smoke_args[@]}"
+      ;;
+    "e2e"*)
+      local -a e2e_args=()
+      if [ "$target" != "e2e" ]; then
+        read -r -a e2e_args <<< "${target#e2e }"
+      fi
+      run_e2e_runner "${e2e_args[@]}"
+      ;;
+    "dev")          exec bash scripts/dev.sh ;;
+    "dashboard")    exec bash scripts/dev-dashboard.sh ;;
+    "build")        exec bash scripts/build.sh ;;
+    "install")      exec bash scripts/install.sh ;;
+    "install skills") exec bash scripts/install-skills.sh ;;
+    "pack plugin") exec bash scripts/pack-plugin.sh ;;
+    "pack plugin "*) exec bash scripts/pack-plugin.sh "${target#pack plugin }" ;;
+    "binary")       exec bash scripts/binary.sh ;;
+    "binary all"|"binaries") exec bash scripts/binary.sh all ;;
+    "all")
+      echo "  ${ACCENT}${BOLD}✅ all: check + test + e2e${NC}"
+      echo ""
+      bash scripts/check.sh || exit 1
+      bash scripts/check-dashboard.sh || exit 1
+      bash scripts/check-plugin.sh || exit 1
+      bash scripts/test.sh all || exit 1
+      exec env E2E_LOGS="${E2E_LOGS:-hide}" go run ./tests/tools/runner e2e --suite extended
+      ;;
+    "e2e-browsers")
+      echo "  ${ACCENT}${BOLD}🐳 e2e-browsers: extended (chrome, cloak, ghost-chrome)${NC}"
+      echo ""
+      run_e2e_matrix "E2E-browsers summary" \
+        "extended / chrome|extended|chrome" \
+        "extended / cloak|extended|cloak" \
+        "extended / ghost-chrome|extended|ghost-chrome" \
+        || exit 1
+      ;;
+    "full")
+      echo "  ${ACCENT}${BOLD}✅ full: check + test + e2e-browsers + smoke-browsers${NC}"
+      echo ""
+      bash scripts/check.sh || exit 1
+      bash scripts/check-dashboard.sh || exit 1
+      bash scripts/check-plugin.sh || exit 1
+      bash scripts/test.sh all || exit 1
+      run_e2e_matrix "E2E-browsers summary" \
+        "extended / chrome|extended|chrome" \
+        "extended / cloak|extended|cloak" \
+        "extended / ghost-chrome|extended|ghost-chrome" \
+        || exit 1
+      run_e2e_matrix "Smoke-browsers summary" \
+        "smoke / chrome|smoke|chrome" \
+        "smoke / cloak (multi-browser)|smoke|cloak|multi-browser" \
+        "smoke / ghost-chrome (multi-browser)|smoke|ghost-chrome|multi-browser" \
+        || exit 1
+      ;;
+    "smoke-browsers")
+      echo "  ${ACCENT}${BOLD}💨 smoke-browsers: e2e smoke (chrome full, cloak+ghost-chrome browser-sensitive)${NC}"
+      echo ""
+      run_e2e_matrix "Smoke-browsers summary" \
+        "smoke / chrome|smoke|chrome" \
+        "smoke / cloak (multi-browser)|smoke|cloak|multi-browser" \
+        "smoke / ghost-chrome (multi-browser)|smoke|ghost-chrome|multi-browser" \
+        || exit 1
+      ;;
+    "run")          exec bash scripts/run.sh ;;
+    "doctor")       exec bash scripts/doctor.sh ;;
+    "zombie")       exec bash scripts/docker-zombie-soak-smoke.sh ;;
+    "hooks")        exec bash scripts/install-hooks.sh ;;
+    *)
+      echo "  ${ERROR}Unknown command: $target${NC}"
+      show_help
+      exit 1
+      ;;
+  esac
+}
+
+pick_with_gum() {
+  local options=()
+  local commands_map=()  # parallel array: full command string for each option
+  local parent=""
+  for cmd in "${COMMANDS[@]}"; do
+    IFS=':' read -r name emoji desc <<< "$cmd"
+    local trimmed="${name#"${name%%[![:space:]]*}"}"
+    if [[ "$name" == " "* ]]; then
+      # Subcommand: indent, no emoji — prefix with parent
+      options+=("$(printf '     %-18s %s' "$trimmed" "$desc")")
+      commands_map+=("$parent $trimmed")
+    else
+      parent="$trimmed"
+      options+=("$(printf '%s %-18s %s' "$emoji" "$trimmed" "$desc")")
+      commands_map+=("$trimmed")
+    fi
+  done
+
+  local choice
+  choice=$(printf '%s\n' "${options[@]}" | gum choose \
+    --header "🦀 Pinchtab Dev" \
+    --header.foreground "#fbbf24" \
+    --cursor.foreground "#00e5cc" \
+    --selected.foreground "#00e5cc" \
+    --item.foreground "#8892b0")
+
+  # Find the index of the chosen option and look up the full command
+  local picked=""
+  for i in "${!options[@]}"; do
+    if [[ "${options[$i]}" == "$choice" ]]; then
+      picked="${commands_map[$i]}"
+      break
+    fi
+  done
+
+  # Clear the picker before streaming command output.
+  printf '\033[2J\033[H'
+  run_command "$picked"
+}
+
+pick_with_select() {
+  echo ""
+  echo "  ${ACCENT}${BOLD}🦀 Pinchtab Dev${NC}"
+  echo ""
+
+  local names=()
+  local i=1
+  for cmd in "${COMMANDS[@]}"; do
+    IFS=':' read -r name emoji desc <<< "$cmd"
+    local trimmed="${name#"${name%%[![:space:]]*}"}"
+    if [[ "$name" == " "* ]]; then
+      printf "  ${MUTED}[%3d]${NC}     ${BOLD}%-18s${NC} ${MUTED}%s${NC}\n" "$i" "$trimmed" "$desc"
+    else
+      printf "  ${MUTED}[%3d]${NC} ${SUCCESS}%s${NC} ${BOLD}%-18s${NC} ${MUTED}%s${NC}\n" "$i" "$emoji" "$trimmed" "$desc"
+    fi
+    names+=("$trimmed")
+    i=$((i + 1))
+  done
+
+  echo ""
+  echo -ne "  ${BOLD}Pick [1-${#COMMANDS[@]}]:${NC} "
+  read -r choice
+
+  # Handle numeric or name input
+  if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#COMMANDS[@]} ]; then
+    run_command "${names[$((choice - 1))]}"
+  else
+    run_command "$choice"
+  fi
+}
+
+# ── Main ─────────────────────────────────────────────────────────────
+
+# Direct command with optional subcommand
+if [ $# -gt 0 ]; then
+  case "$1" in
+    -h|--help|help) show_help; exit 0 ;;
+    -i|--interactive)
+      if command -v gum &>/dev/null; then pick_with_gum; else pick_with_select; fi
+      exit 0
+      ;;
+
+    check)
+      if [ $# -gt 1 ]; then
+        run_command "check $2"
+      else
+        run_command "check"
+      fi
+      ;;
+    install)
+      if [ $# -gt 1 ]; then
+        run_command "install $2"
+      else
+        run_command "install"
+      fi
+      ;;
+    pack)
+      if [ "${2:-}" = "plugin" ]; then
+        if [ $# -gt 2 ]; then
+          run_command "pack plugin $3"
+        else
+          run_command "pack plugin"
+        fi
+      else
+        echo "  ${ERROR}Unknown pack target: ${2:-}${NC}" >&2
+        echo "  Usage: dev pack plugin [<version>]" >&2
+        exit 1
+      fi
+      ;;
+    test)
+      if [ $# -gt 1 ]; then
+        run_command "test $2"
+      else
+        run_command "test"
+      fi
+      ;;
+    format)
+      if [ $# -gt 1 ]; then
+        run_command "format $2"
+      else
+        run_command "format"
+      fi
+      ;;
+    e2e)
+      if [ "${2:-}" = "smoke" ]; then
+        echo ""
+        echo "  ${ACCENT}${BOLD}🐳 E2E smoke${NC}"
+        echo ""
+        run_e2e_runner smoke "${@:3}"
+      fi
+      if [ "${2:-}" = "test" ]; then
+        if [ $# -lt 3 ] || [ -z "${3:-}" ]; then
+          echo "  ${ERROR}Missing test name. Usage: dev e2e test \"<name substring>\"${NC}" >&2
+          exit 1
+        fi
+        echo ""
+        echo "  ${ACCENT}${BOLD}🎯 Single E2E test${NC}"
+        echo ""
+        exec env E2E_LOGS="${E2E_LOGS:-show}" bash scripts/dev-e2e.sh "$3"
+      fi
+      if [ "${2:-}" = "smoke-plugin" ]; then
+        echo ""
+        echo "  ${ACCENT}${BOLD}🐳 OpenClaw plugin smoke${NC}"
+        echo ""
+        exec bash tests/manual/openclaw-plugin-smoke/run.sh "${@:3}"
+      fi
+      run_e2e_runner "${@:2}"
+      ;;
+    smoke)
+      if [ $# -gt 1 ]; then
+        run_command "smoke ${*:2}"
+      else
+        run_command "smoke"
+      fi
+      ;;
+    binary)
+      if [ $# -gt 1 ]; then
+        run_command "binary $2"
+      else
+        run_command "binary"
+      fi
+      ;;
+    opt)
+      if [ $# -gt 1 ]; then
+        exec bash scripts/dev-opt.sh "${@:2}"
+      else
+        exec bash scripts/dev-opt.sh help
+      fi
+      ;;
+    bench)
+      if [ $# -gt 1 ]; then
+        exec bash scripts/dev-bench.sh "${@:2}"
+      else
+        exec bash scripts/dev-bench.sh help
+      fi
+      ;;
+    *) run_command "$1" ;;
+  esac
+  exit 0
+fi
+
+# No args → interactive picker
+if command -v gum &>/dev/null; then
+  pick_with_gum
+else
+  pick_with_select
+fi

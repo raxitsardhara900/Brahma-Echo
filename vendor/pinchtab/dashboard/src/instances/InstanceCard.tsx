@@ -1,0 +1,59 @@
+import { Card, Badge, Button, StatusDot } from "../components/atoms";
+import type { Instance } from "../types";
+
+interface Props {
+  instance: Instance;
+  onOpen: () => void;
+  onStop: () => void;
+}
+
+function formatUptime(startTime: string): string {
+  const diff = Date.now() - new Date(startTime).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ${mins % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+export default function InstanceCard({ instance, onOpen, onStop }: Props) {
+  return (
+    <Card hover className="flex flex-col p-4">
+      <div className="mb-3 flex items-start justify-between">
+        <div className="flex items-center gap-2">
+          <StatusDot status="online" />
+          <div>
+            <div className="font-medium text-text-primary">
+              {instance.profileName}
+            </div>
+            <div className="text-xs text-text-muted">:{instance.port}</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-1">
+          <Badge variant="default">{instance.browser || "chrome"}</Badge>
+          <Badge variant={instance.headless ? "info" : "default"}>
+            {instance.headless ? "Headless" : "Headed"}
+          </Badge>
+        </div>
+      </div>
+
+      <div className="mb-3 rounded-sm border border-border-subtle bg-[rgb(var(--brand-surface-code-rgb)/0.4)] px-3 py-2 text-xs">
+        <span className="dashboard-section-title mr-2 text-[0.68rem]">
+          Uptime
+        </span>
+        <span className="dashboard-mono text-text-secondary">
+          {formatUptime(instance.startTime)}
+        </span>
+      </div>
+
+      <div className="mt-auto flex gap-2">
+        <Button size="sm" variant="primary" className="flex-1" onClick={onOpen}>
+          Open Dashboard
+        </Button>
+        <Button size="sm" variant="danger" onClick={onStop}>
+          Stop
+        </Button>
+      </div>
+    </Card>
+  );
+}

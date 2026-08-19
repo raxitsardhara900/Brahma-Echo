@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>State Loading Fixture</title>
+  <script>
+    window.__stateFetchDone = false;
+    window.__stateFetchStarted = true;
+    fetch('/state-slow.json')
+      .then(r => r.text())
+      .then(() => { window.__stateFetchDone = true; })
+      .catch(() => { window.__stateFetchDone = true; });
+  </script>
+</head>
+<body>
+  <h1>State Loading Fixture</h1>
+</body>
+</html>

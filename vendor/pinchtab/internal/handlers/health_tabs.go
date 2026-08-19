@@ -1,0 +1,213 @@
+package handlers
+
+import (
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/pinchtab/pinchtab/internal/bridge"
+	"github.com/pinchtab/pinchtab/internal/httpx"
+)
+
+type tabHandoffReader interface {
+	TabHandoffState(tabID string) (bridge.TabHandoffState, bool)
+}
+
+func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
+	if h.Bridge == nil {
+		writeUnavailable(w, 503, "bridge_unavailable", "bridge not initialized")
+		return
+	}
+	if draining, retryAfter := h.bridgeRestartStatus(); draining {
+		seconds := int((retryAfter + time.Second - 1) / time.Second)
+		if seconds < 1 {
+			seconds = 1
+		}
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", seconds))
+		httpx.JSONError(w, http.StatusServiceUnavailable, "browser_draining",
+			fmt.Sprintf("browser is restarting; retry after %ds", seconds),
+			map[string]any{"status": "draining", "retryAfterSeconds": seconds})
+		return
+	}
+
+	if err := h.ensureBrowser(h.Config); err != nil {
+		if h.writeBridgeUnavailable(w, err) {
+			return
+		}
+		writeUnavailable(w, 503, "browser_init_failed", fmt.Sprintf("browser initialization failed: %v", err))
+		return
+	}
+	targets, err := h.Bridge.ListTargets()
+	if err != nil {
+		writeUnavailable(w, 503, "list_targets_failed", err.Error())
+		return
+	}
+
+	resp := map[string]any{"status": "ok", "tabs": len(targets)}
+	// Server-mode /health reports version; bridge /health did not, so a bridge
+	// bug report could not state which build produced it.
+	if h.Version != "" {
+		resp["version"] = h.Version
+	}
+
+	if crashLogs := h.Bridge.GetCrashLogs(); len(crashLogs) > 0 {
+		resp["crashLogs"] = crashLogs
+	}
+	if hasFailureDiagnostics() {
+		resp["failures"] = FailureSnapshot(LayerInstance)
+	}
+	if bridge.HasCrashDiagnostics() {
+		resp["crashes"] = bridge.CrashSnapshot()
+	}
+
+	httpx.JSON(w, 200, resp)
+}
+
+func (h *Handlers) HandleEnsureBrowser(w http.ResponseWriter, r *http.Request) {
+	h.ensureBrowserWithStatus(w, "browser_ready")
+}
+
+// HandleEnsureChrome serves the pre-rename /ensure-chrome alias and keeps the
+// legacy "chrome_ready" status for version-skewed orchestrators that match it.
+func (h *Handlers) HandleEnsureChrome(w http.ResponseWriter, r *http.Request) {
+	h.ensureBrowserWithStatus(w, "chrome_ready")
+}
+
+func (h *Handlers) ensureBrowserWithStatus(w http.ResponseWriter, status string) {
+	if err := h.ensureBrowser(h.Config); err != nil {
+		if h.writeBridgeUnavailable(w, err) {
+			return
+		}
+		httpx.Error(w, 500, fmt.Errorf("browser initialization failed: %w", err))
+		return
+	}
+	httpx.JSON(w, 200, map[string]string{"status": status})
+}
+
+func (h *Handlers) HandleBrowserRestart(w http.ResponseWriter, r *http.Request) {
+	if h.Bridge == nil {
+		httpx.Error(w, 503, fmt.Errorf("bridge not initialized"))
+		return
+	}
+	if err := h.Bridge.RestartBrowser(h.Config); err != nil {
+		httpx.Error(w, 500, fmt.Errorf("browser restart failed: %w", err))
+		return
+	}
+	httpx.JSON(w, 200, map[string]string{"status": "browser_restarted"})
+}
+
+// HandleMetrics reports this process's own counters. In server mode that is an
+// instance child: the orchestrator front door answers its own /metrics, so a
+// client can read either layer without the two ever being summed.
+func (h *Handlers) HandleMetrics(w http.ResponseWriter, r *http.Request) {
+	result := DiagnosticsSnapshot(LayerInstance)
+
+	if h.Bridge != nil {
+		if mem, err := h.Bridge.GetAggregatedMemoryMetrics(); err == nil && mem != nil {
+			result["memory"] = mem
+		}
+	}
+
+	httpx.JSON(w, 200, result)
+}
+
+func (h *Handlers) HandleTabMetrics(w http.ResponseWriter, r *http.Request) {
+	tabID := r.PathValue("id")
+	if tabID == "" {
+		httpx.Error(w, 400, fmt.Errorf("missing tab id"))
+		return
+	}
+
+	if h.Bridge == nil {
+		httpx.Error(w, 503, fmt.Errorf("bridge not initialized"))
+		return
+	}
+
+	if _, _, err := h.tabContext(r, tabID); err != nil {
+		WriteTabContextError(w, err, http.StatusNotFound)
+		return
+	}
+
+	mem, err := h.Bridge.GetMemoryMetrics(tabID)
+	if err != nil {
+		httpx.Error(w, 500, fmt.Errorf("failed to get metrics: %w", err))
+		return
+	}
+
+	httpx.JSON(w, 200, mem)
+}
+
+func (h *Handlers) HandleTabs(w http.ResponseWriter, r *http.Request) {
+	if h.Bridge == nil {
+		httpx.Error(w, 503, fmt.Errorf("bridge not initialized"))
+		return
+	}
+	if draining, retryAfter := h.bridgeRestartStatus(); draining {
+		seconds := int((retryAfter + time.Second - 1) / time.Second)
+		if seconds < 1 {
+			seconds = 1
+		}
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", seconds))
+		httpx.ErrorCode(w, http.StatusServiceUnavailable, "browser_draining", bridge.ErrBrowserDraining.Error(), true, map[string]any{"retryAfterSeconds": seconds})
+		return
+	}
+	if !h.ensureBrowserOrRespond(w, h.Config) {
+		return
+	}
+
+	targets, err := h.Bridge.ListTargets()
+	if err != nil {
+		httpx.Error(w, 503, err)
+		return
+	}
+
+	currentTabID := ""
+	if _, resolvedID, err := h.tabContext(r, ""); err == nil {
+		currentTabID = resolvedID
+	}
+
+	tabs := make([]map[string]any, 0, len(targets))
+	appendTab := func(t bridge.TabTarget) {
+		// Skip the initial about:blank tab that Chrome creates on launch
+		if bridge.IsTransientURL(t.URL, h.Config.Port) {
+			return
+		}
+		tabID := t.TargetID
+		entry := map[string]any{
+			"id":    tabID,
+			"url":   t.URL,
+			"title": t.Title,
+			"type":  t.Type,
+		}
+		if t.BrowserContextID != "" {
+			entry["browserContextId"] = t.BrowserContextID
+		}
+		if hr, ok := h.Bridge.(tabHandoffReader); ok {
+			if hs, ok := hr.TabHandoffState(tabID); ok {
+				entry["status"] = hs.Status
+				entry["handoffReason"] = hs.Reason
+				entry["pausedAt"] = hs.PausedAt.Format(time.RFC3339)
+			} else {
+				entry["status"] = "active"
+			}
+		}
+		if lock := h.Bridge.TabLockInfo(tabID); lock != nil {
+			entry["owner"] = lock.Owner
+			entry["lockedUntil"] = lock.ExpiresAt.Format(time.RFC3339)
+		}
+		tabs = append(tabs, entry)
+	}
+
+	for _, t := range targets {
+		if t.TargetID == currentTabID {
+			appendTab(t)
+		}
+	}
+	for _, t := range targets {
+		if t.TargetID == currentTabID {
+			continue
+		}
+		appendTab(t)
+	}
+	httpx.JSON(w, 200, map[string]any{"tabs": tabs})
+}

@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Network Retain Body</title>
+</head>
+<body>
+  <h1>Network Retain Body</h1>
+  <script>
+    window.__retainFetchDone = false;
+    window.__retainFetchOk = false;
+    window.__retainFetchText = "";
+    fetch('/network-retain-body.json')
+      .then(r => r.text())
+      .then(t => {
+        window.__retainFetchDone = true;
+        window.__retainFetchOk = true;
+        window.__retainFetchText = t;
+      })
+      .catch(e => {
+        window.__retainFetchDone = true;
+        window.__retainFetchOk = false;
+        window.__retainFetchText = String(e);
+      });
+  </script>
+</body>
+</html>

@@ -1,0 +1,185 @@
+package main
+
+import (
+	"errors"
+	"strings"
+
+	browseractions "github.com/pinchtab/pinchtab/internal/cli/actions"
+	"github.com/pinchtab/pinchtab/internal/urls"
+	"github.com/spf13/cobra"
+)
+
+var quickCmd = &cobra.Command{
+	Use:        "quick <url>",
+	Short:      "Deprecated: use nav <url> --snap",
+	Deprecated: "use 'pinchtab nav <url> --snap' instead",
+	Args:       cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		args[0] = urls.Normalize(args[0])
+		runCLI(func(rt cliRuntime) {
+			browseractions.Quick(rt.client, rt.base, rt.token, args)
+		})
+	},
+}
+
+var navCmd = &cobra.Command{
+	Use:     "nav <url>",
+	Aliases: []string{"goto", "navigate", "open"},
+	Short:   "Navigate to URL",
+	Args:    cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		url := urls.Normalize(args[0])
+		runCLIEnsuringServer("nav", func(rt cliRuntime) {
+			tabID := browseractions.Navigate(rt.client, rt.base, rt.token, url, cmd)
+			WriteTabStateFile(tabID)
+		})
+	},
+}
+
+var backCmd = &cobra.Command{
+	Use:   "back",
+	Short: "Go back in browser history",
+	Run: func(cmd *cobra.Command, args []string) {
+		runCLI(func(rt cliRuntime) {
+			browseractions.Back(rt.client, rt.base, rt.token, cmd)
+		})
+	},
+}
+
+var forwardCmd = &cobra.Command{
+	Use:   "forward",
+	Short: "Go forward in browser history",
+	Run: func(cmd *cobra.Command, args []string) {
+		runCLI(func(rt cliRuntime) {
+			browseractions.Forward(rt.client, rt.base, rt.token, cmd)
+		})
+	},
+}
+
+var reloadCmd = &cobra.Command{
+	Use:   "reload",
+	Short: "Reload current page",
+	Run: func(cmd *cobra.Command, args []string) {
+		runCLI(func(rt cliRuntime) {
+			browseractions.Reload(rt.client, rt.base, rt.token, cmd)
+		})
+	},
+}
+
+var tabsCmd = &cobra.Command{
+	Use:     "tab [id]",
+	Aliases: []string{"tabs"},
+	Short:   "List tabs, or focus a tab by ID",
+	Args:    cobra.MaximumNArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		runCLI(func(rt cliRuntime) {
+			if len(args) == 0 {
+				browseractions.TabList(rt.client, rt.base, rt.token, cmd)
+				return
+			}
+			tabID := browseractions.TabFocus(rt.client, rt.base, rt.token, args[0], cmd)
+			WriteTabStateFile(tabID)
+		})
+	},
+}
+
+var closeCmd = newTabCloseCmd()
+var tabCloseCmd = newTabCloseCmd()
+var handoffCmd = newTabHandoffCmd()
+var tabHandoffCmd = newTabHandoffCmd()
+var resumeCmd = newTabResumeCmd()
+var tabResumeCmd = newTabResumeCmd()
+var handoffStatusCmd = newTabHandoffStatusCmd()
+var tabHandoffStatusCmd = newTabHandoffStatusCmd()
+
+func newTabCloseCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "close <id>",
+		Short: "Close a tab by ID",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			runCLI(func(rt cliRuntime) {
+				browseractions.TabClose(rt.client, rt.base, rt.token, args[0], cmd)
+				ClearTabStateFileIfCurrent(args[0])
+			})
+		},
+	}
+}
+
+// errNoCurrentTab refuses locally instead of issuing /tabs//<verb>: an empty path
+// segment 404s at the mux, which the CLI then misdiagnoses as an outdated server.
+var errNoCurrentTab = errors.New("no current tab: pass a tab id, or run `pinchtab nav <url>` to open one")
+
+func mustResolveTabArg(args []string) (string, error) {
+	tabID := resolveTabArg(args)
+	if strings.TrimSpace(tabID) == "" {
+		return "", errNoCurrentTab
+	}
+	return tabID, nil
+}
+
+func newTabHandoffCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:           "handoff [id]",
+		Short:         "Pause tab automation for human handoff",
+		Long:          "Mark a tab as paused_handoff so action routes block until resumed or timeout expires. Defaults to the current tab from the state file.",
+		Args:          cobra.MaximumNArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			reason, _ := cmd.Flags().GetString("reason")
+			timeoutMS, _ := cmd.Flags().GetInt("timeout-ms")
+			tabID, err := mustResolveTabArg(args)
+			if err != nil {
+				return err
+			}
+			runCLI(func(rt cliRuntime) {
+				browseractions.TabHandoff(rt.client, rt.base, rt.token, tabID, reason, timeoutMS, cmd)
+			})
+			return nil
+		},
+	}
+}
+
+func newTabResumeCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:           "resume [id]",
+		Short:         "Resume a paused_handoff tab",
+		Long:          "Resume automation on a paused tab. Defaults to the current tab from the state file.",
+		Args:          cobra.MaximumNArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			status, _ := cmd.Flags().GetString("status")
+			tabID, err := mustResolveTabArg(args)
+			if err != nil {
+				return err
+			}
+			runCLI(func(rt cliRuntime) {
+				browseractions.TabResume(rt.client, rt.base, rt.token, tabID, status, cmd)
+			})
+			return nil
+		},
+	}
+}
+
+func newTabHandoffStatusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:           "handoff-status [id]",
+		Short:         "Show handoff status for a tab",
+		Long:          "Show handoff status. Defaults to the current tab from the state file.",
+		Args:          cobra.MaximumNArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			tabID, err := mustResolveTabArg(args)
+			if err != nil {
+				return err
+			}
+			runCLI(func(rt cliRuntime) {
+				browseractions.TabHandoffStatus(rt.client, rt.base, rt.token, tabID, cmd)
+			})
+			return nil
+		},
+	}
+}

@@ -1,0 +1,51 @@
+package bridge
+
+const (
+	ActionClick          = "click"
+	ActionDoubleClick    = "dblclick"
+	ActionType           = "type"
+	ActionFill           = "fill"
+	ActionPress          = "press"
+	ActionFocus          = "focus"
+	ActionHover          = "hover"
+	ActionSelect         = "select"
+	ActionScroll         = "scroll"
+	ActionMouseMove      = "mouse-move"
+	ActionMouseDown      = "mouse-down"
+	ActionMouseUp        = "mouse-up"
+	ActionMouseWheel     = "mouse-wheel"
+	ActionDrag           = "drag"
+	ActionCheck          = "check"
+	ActionUncheck        = "uncheck"
+	ActionKeyboardType   = "keyboard-type"
+	ActionKeyboardInsert = "keyboard-inserttext"
+	ActionKeyDown        = "keydown"
+	ActionKeyUp          = "keyup"
+	ActionScrollIntoView = "scrollintoview"
+)
+
+func (b *Bridge) InitActionRegistry() {
+	b.Actions = map[string]ActionFunc{
+		ActionClick:          b.actionClick,
+		ActionDoubleClick:    b.actionDoubleClick,
+		ActionType:           b.actionType,
+		ActionFill:           b.actionFill,
+		ActionPress:          b.actionPress,
+		ActionFocus:          b.actionFocus,
+		ActionHover:          b.actionHover,
+		ActionSelect:         b.actionSelect,
+		ActionScroll:         b.actionScroll,
+		ActionMouseMove:      b.actionMouseMove,
+		ActionMouseDown:      b.actionMouseDown,
+		ActionMouseUp:        b.actionMouseUp,
+		ActionMouseWheel:     b.actionMouseWheel,
+		ActionDrag:           b.actionDrag,
+		ActionCheck:          b.actionCheck,
+		ActionUncheck:        b.actionUncheck,
+		ActionKeyboardType:   b.actionKeyboardType,
+		ActionKeyboardInsert: b.actionKeyboardInsert,
+		ActionKeyDown:        b.actionKeyDown,
+		ActionKeyUp:          b.actionKeyUp,
+		ActionScrollIntoView: b.actionScrollIntoView,
+	}
+}

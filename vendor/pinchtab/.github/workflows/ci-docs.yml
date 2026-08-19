@@ -1,0 +1,27 @@
+name: CI / Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/ci-docs.yml'
+      - '.github/workflows/reusable-docs.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/ci-docs.yml'
+      - '.github/workflows/reusable-docs.yml'
+  workflow_dispatch:
+
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    uses: ./.github/workflows/reusable-docs.yml
+    with:
+      ref: ${{ github.sha }}

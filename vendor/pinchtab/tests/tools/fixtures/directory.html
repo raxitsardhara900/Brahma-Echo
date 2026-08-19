@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PinchTab Benchmark - Staff Directory</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    .dept {
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      margin-bottom: 8px;
+      overflow: hidden;
+    }
+    .dept-header {
+      background: #f5f5f5;
+      padding: 12px 16px;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-weight: bold;
+    }
+    .dept-body { display: none; padding: 0 16px 12px; }
+    .dept[data-expanded="true"] .dept-body { display: block; }
+    .member {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid #eee;
+    }
+    .member:last-child { border-bottom: none; }
+    .member-name { font-weight: bold; }
+    .member-role { color: #666; font-size: 0.9em; }
+    .member-email { color: #1976d2; }
+    #status { margin-top: 16px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <h1>Staff Directory — VERIFY_DIRECTORY_PAGE_90909</h1>
+
+  <p>Click a department to expand its team. TOTAL_DEPARTMENTS_3 with
+  TOTAL_STAFF_13 members across all teams.</p>
+
+  <div class="dept" id="dept-eng" data-expanded="false">
+    <div class="dept-header" id="dept-eng-header" role="button" tabindex="0">
+      Engineering <span>(6 members)</span>
+    </div>
+    <div class="dept-body">
+      <div class="member" id="m-ada"><div><span class="member-name">Ada Lovelace</span> <span class="member-role">— Team Lead</span></div><span class="member-email">ada@company.test</span></div>
+      <div class="member" id="m-grace"><div><span class="member-name">Grace Hopper</span> <span class="member-role">— Senior Engineer</span></div><span class="member-email">grace@company.test</span></div>
+      <div class="member" id="m-alan"><div><span class="member-name">Alan Turing</span> <span class="member-role">— Engineer</span></div><span class="member-email">alan@company.test</span></div>
+      <div class="member" id="m-linus"><div><span class="member-name">Linus Torvalds</span> <span class="member-role">— Engineer</span></div><span class="member-email">linus@company.test</span></div>
+      <div class="member" id="m-margaret"><div><span class="member-name">Margaret Hamilton</span> <span class="member-role">— Engineer</span></div><span class="member-email">margaret@company.test</span></div>
+      <div class="member" id="m-dennis"><div><span class="member-name">Dennis Ritchie</span> <span class="member-role">— Junior Engineer</span></div><span class="member-email">dennis@company.test</span></div>
+    </div>
+  </div>
+
+  <div class="dept" id="dept-design" data-expanded="false">
+    <div class="dept-header" id="dept-design-header" role="button" tabindex="0">
+      Design <span>(4 members)</span>
+    </div>
+    <div class="dept-body">
+      <div class="member" id="m-susan"><div><span class="member-name">Susan Kare</span> <span class="member-role">— Team Lead</span></div><span class="member-email">susan@company.test</span></div>
+      <div class="member" id="m-dieter"><div><span class="member-name">Dieter Rams</span> <span class="member-role">— Senior Designer</span></div><span class="member-email">dieter@company.test</span></div>
+      <div class="member" id="m-jony"><div><span class="member-name">Jony Ive</span> <span class="member-role">— Designer</span></div><span class="member-email">jony@company.test</span></div>
+      <div class="member" id="m-paula"><div><span class="member-name">Paula Scher</span> <span class="member-role">— Designer</span></div><span class="member-email">paula@company.test</span></div>
+    </div>
+  </div>
+
+  <div class="dept" id="dept-product" data-expanded="false">
+    <div class="dept-header" id="dept-product-header" role="button" tabindex="0">
+      Product <span>(3 members)</span>
+    </div>
+    <div class="dept-body">
+      <div class="member" id="m-marty"><div><span class="member-name">Marty Cagan</span> <span class="member-role">— Team Lead</span></div><span class="member-email">marty@company.test</span></div>
+      <div class="member" id="m-teresa"><div><span class="member-name">Teresa Torres</span> <span class="member-role">— Senior PM</span></div><span class="member-email">teresa@company.test</span></div>
+      <div class="member" id="m-ken"><div><span class="member-name">Ken Norton</span> <span class="member-role">— PM</span></div><span class="member-email">ken@company.test</span></div>
+    </div>
+  </div>
+
+  <div id="status">DIRECTORY_STATUS=COLLAPSED</div>
+
+  <script>
+    (function () {
+      var depts = document.querySelectorAll('.dept');
+      var status = document.getElementById('status');
+
+      depts.forEach(function (dept) {
+        var header = dept.querySelector('.dept-header');
+        header.addEventListener('click', function () {
+          var wasOpen = dept.getAttribute('data-expanded') === 'true';
+          depts.forEach(function (d) { d.setAttribute('data-expanded', 'false'); });
+          if (!wasOpen) {
+            dept.setAttribute('data-expanded', 'true');
+            var deptName = dept.id.replace('dept-', '').toUpperCase();
+            var members = dept.querySelectorAll('.member');
+            status.textContent = 'DEPT_EXPANDED=' + deptName + ' MEMBER_COUNT=' + members.length;
+          } else {
+            status.textContent = 'DIRECTORY_STATUS=COLLAPSED';
+          }
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

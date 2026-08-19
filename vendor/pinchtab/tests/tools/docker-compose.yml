@@ -1,0 +1,67 @@
+services:
+  pinchtab:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment:
+      # Selects which mounted config the pinchtab binary loads at startup.
+      # Defaults to the production-faithful config used by the optimization
+      # loop. The cost-comparison benchmark lane (`./dev bench pinchtab`)
+      # overrides this via the docker-compose.benchmark.yml overlay to point
+      # at /fixture-config/pinchtab-benchmark.json (idpi.wrapContent=false).
+      PINCHTAB_CONFIG: /fixture-config/pinchtab.json
+    volumes:
+      # Both configs are mounted; PINCHTAB_CONFIG above selects which one
+      # the binary reads. Keeping both mounted at all times means switching
+      # lanes is just an env-var change, no rebind, no entrypoint copy.
+      - ./config/pinchtab.json:/fixture-config/pinchtab.json:ro
+      - ./config/pinchtab-benchmark.json:/fixture-config/pinchtab-benchmark.json:ro
+    ports:
+      - "127.0.0.1:9867:9867"
+    shm_size: '2gb'
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    healthcheck:
+      test: ["CMD-SHELL", "wget --header='Authorization: Bearer benchmark-token' -q -O /dev/null http://localhost:9867/health"]
+      interval: 3s
+      timeout: 10s
+      retries: 20
+      start_period: 15s
+    networks:
+      - benchmark-net
+    depends_on:
+      fixtures:
+        condition: service_healthy
+
+  fixtures:
+    image: nginx:alpine
+    volumes:
+      - ./fixtures:/usr/share/nginx/html:ro
+    ports:
+      - "127.0.0.1:8080:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:80/"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+    networks:
+      - benchmark-net
+
+  agent-browser:
+    build:
+      context: ./agent-browser
+    command: ["/bin/bash", "-lc", "sleep infinity"]
+    working_dir: /workspace/tests/benchmark
+    volumes:
+      - ../..:/workspace
+    shm_size: '2gb'
+    networks:
+      - benchmark-net
+    depends_on:
+      fixtures:
+        condition: service_healthy
+
+networks:
+  benchmark-net:
+    driver: bridge

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PinchTab Benchmark - Wizard</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    .progress { display: flex; gap: 8px; margin-bottom: 20px; }
+    .progress-step {
+      padding: 4px 12px;
+      border-radius: 12px;
+      background: #eee;
+      font-size: 0.85em;
+    }
+    .progress-step.active { background: #2196f3; color: white; }
+    .progress-step.done { background: #4caf50; color: white; }
+    .step { display: none; }
+    .step.active { display: block; }
+    .form-group { margin-bottom: 12px; }
+    .form-group label { display: block; margin-bottom: 4px; font-weight: bold; }
+    .form-group input[type="text"],
+    .form-group input[type="email"],
+    .form-group select {
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      width: 300px;
+    }
+    button {
+      padding: 8px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      border: 1px solid #ccc;
+    }
+    .btn-next { background: #2196f3; color: white; border-color: #2196f3; }
+    .summary {
+      background: #e8f5e9;
+      padding: 12px;
+      border-radius: 4px;
+      font-family: monospace;
+    }
+    .summary p { margin: 4px 0; }
+    #status { margin-top: 16px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <h1>Setup Wizard — VERIFY_WIZARD_PAGE_10101</h1>
+
+  <div class="progress">
+    <span class="progress-step active" id="prog-1">1. Account</span>
+    <span class="progress-step" id="prog-2">2. Preferences</span>
+    <span class="progress-step" id="prog-3">3. Confirm</span>
+  </div>
+
+  <div class="step active" id="step-1">
+    <h2>Account Details</h2>
+    <div class="form-group">
+      <label for="wiz-name">Full Name</label>
+      <input type="text" id="wiz-name" placeholder="Your name" />
+    </div>
+    <div class="form-group">
+      <label for="wiz-email">Email</label>
+      <input type="email" id="wiz-email" placeholder="you@example.com" />
+    </div>
+    <button class="btn-next" id="next-1">Next</button>
+  </div>
+
+  <div class="step" id="step-2">
+    <h2>Preferences</h2>
+    <div class="form-group">
+      <label for="wiz-plan">Plan</label>
+      <select id="wiz-plan">
+        <option value="">Select a plan...</option>
+        <option value="free">Free</option>
+        <option value="pro">Pro ($29/mo)</option>
+        <option value="enterprise">Enterprise (Custom)</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="wiz-notify">
+        <input type="checkbox" id="wiz-notify" /> Send me email notifications
+      </label>
+    </div>
+    <button class="btn-next" id="next-2">Next</button>
+  </div>
+
+  <div class="step" id="step-3">
+    <h2>Confirmation</h2>
+    <div class="summary" id="summary"></div>
+    <button class="btn-next" id="finish-btn">Complete Setup</button>
+  </div>
+
+  <div id="status">WIZARD_STEP=1</div>
+
+  <script>
+    (function () {
+      var status = document.getElementById('status');
+      var data = {};
+
+      function goToStep(n) {
+        document.querySelectorAll('.step').forEach(function (s) { s.classList.remove('active'); });
+        document.getElementById('step-' + n).classList.add('active');
+        document.querySelectorAll('.progress-step').forEach(function (s, i) {
+          s.classList.remove('active', 'done');
+          if (i + 1 < n) s.classList.add('done');
+          else if (i + 1 === n) s.classList.add('active');
+        });
+        status.textContent = 'WIZARD_STEP=' + n;
+      }
+
+      document.getElementById('next-1').addEventListener('click', function () {
+        data.name = document.getElementById('wiz-name').value;
+        data.email = document.getElementById('wiz-email').value;
+        if (!data.name || !data.email) {
+          status.textContent = 'WIZARD_STEP=1 WIZARD_ERROR=FIELDS_REQUIRED';
+          return;
+        }
+        goToStep(2);
+      });
+
+      document.getElementById('next-2').addEventListener('click', function () {
+        data.plan = document.getElementById('wiz-plan').value;
+        data.notify = document.getElementById('wiz-notify').checked;
+        if (!data.plan) {
+          status.textContent = 'WIZARD_STEP=2 WIZARD_ERROR=PLAN_REQUIRED';
+          return;
+        }
+        var summary = document.getElementById('summary');
+        summary.innerHTML =
+          '<p>WIZARD_SUMMARY_NAME=' + data.name + '</p>' +
+          '<p>WIZARD_SUMMARY_EMAIL=' + data.email + '</p>' +
+          '<p>WIZARD_SUMMARY_PLAN=' + data.plan.toUpperCase() + '</p>' +
+          '<p>WIZARD_SUMMARY_NOTIFY=' + (data.notify ? 'YES' : 'NO') + '</p>';
+        goToStep(3);
+      });
+
+      document.getElementById('finish-btn').addEventListener('click', function () {
+        status.textContent = 'WIZARD_COMPLETE=' + data.name + ',' + data.email + ',' + data.plan;
+      });
+    })();
+  </script>
+</body>
+</html>

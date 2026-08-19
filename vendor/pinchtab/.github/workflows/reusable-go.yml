@@ -1,0 +1,126 @@
+name: Reusable / Go
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & Vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+
+      - name: Download deps
+        run: go mod download
+
+      - name: Format check
+        run: |
+          mapfile -t go_files < <(git ls-files -- '*.go' | while read -r file; do
+            [ -f "$file" ] && printf '%s\n' "$file"
+          done)
+          unformatted=""
+          if [ ${#go_files[@]} -gt 0 ]; then
+            unformatted=$(gofmt -l "${go_files[@]}")
+          fi
+          if [ -n "$unformatted" ]; then
+            echo "Files not formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build -o pinchtab ./cmd/pinchtab
+
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@latest
+
+      # No --hide-summary. The output section carries file:line and expected-vs-actual
+      # under each failing test name, plus the reason under each skip, and in CI the log
+      # is the only artifact. skipped is not hidden either: scripts/test.sh hides it only
+      # because print_skipped_tests re-renders that list with each reason attached, and CI
+      # has no equivalent. TestNoGotestsumInvocationHidesTheOutputSummary enforces the
+      # output half repo-wide.
+      - name: Test with coverage
+        run: gotestsum --format=pkgname -- -p 1 -count=1 -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Coverage summary
+        run: |
+          coverage=$(go tool cover -func=coverage.out | tail -1)
+          echo "### Coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "$coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install tygo
+        run: go install github.com/gzuidhof/tygo@latest
+
+      - name: Build dashboard
+        run: |
+          cd dashboard && bun install --frozen-lockfile && cd ..
+          ./scripts/build-dashboard.sh
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.10.1
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run gosec
+        run: gosec -exclude=G301,G302,G304,G306,G404,G107,G115,G703,G704,G705,G706 -fmt=json -out=gosec-results.json ./... || true
+
+      - name: Check critical findings
+        run: |
+          ISSUES=$(cat gosec-results.json | jq '[.Issues[] | select(.rule_id == "G112" or .rule_id == "G204")] | length')
+          echo "Critical issues: $ISSUES"
+          cat gosec-results.json | jq '.Stats'
+          if [ "$ISSUES" -gt 0 ]; then
+            cat gosec-results.json | jq '.Issues[] | select(.rule_id == "G112" or .rule_id == "G204")'
+            exit 1
+          fi

@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+#
+# ./scripts/pt — transparent wrapper around `pinchtab` for the benchmark harness.
+#
+# It only does one thing: run the native `pinchtab` CLI inside the benchmark
+# Docker container (default `tools-pinchtab-1`) with the host-selected
+# environment. Every argument is forwarded as-is, so any
+# `pinchtab <subcommand> [args...]` invocation behaves exactly like the
+# installed CLI. Exit codes and stdout/stderr are preserved.
+#
+# The only abstraction this script provides is the Docker exec boundary:
+#   - container selection via $PINCHTAB_CONTAINER
+#   - auth + endpoint + session env forwarded into the container
+#   - stdin forwarding so pipes, heredocs, and process substitution work
+#     (needed for e.g. uploads, piped eval expressions)
+#
+# Env inputs (all optional):
+#   PINCHTAB_CONTAINER  Docker container name       (default: tools-pinchtab-1)
+#   PINCHTAB_SERVER     Pinchtab server URL         (default: http://localhost:9867)
+#   PINCHTAB_TOKEN      Bearer token                (default: benchmark-token;
+#                                                    set to "" for no auth header)
+#   PINCHTAB_SESSION    Agent session token         (default: unset)
+#
+# Usage examples:
+#   ./scripts/pt nav https://example.com
+#   ./scripts/pt snap -i -c
+#   TAB=$(./scripts/pt nav URL --print-tab-id)
+#   ./scripts/pt --tab "$TAB" click e5
+#   ./scripts/pt eval 'document.title'
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# step-end subcommand: bookkeeping shortcut, not a pinchtab CLI call.
+# Injects --type pinchtab and --report-file (read from the current-run
+# pointer) so the agent can drop both flags. All remaining positionals
+# are forwarded to runner step-end.
+if [[ "${1:-}" == "step-end" ]]; then
+  shift
+  BENCHMARK_DIR="$(cd "${SCRIPT_DIR}/../../benchmark" && pwd)"
+  REPORT_PTR="${BENCHMARK_DIR}/results/current_pinchtab_report.txt"
+  if [[ ! -s "${REPORT_PTR}" ]]; then
+    echo "ERROR: no current pinchtab report (missing ${REPORT_PTR})" >&2
+    exit 1
+  fi
+  REPORT_FILE="$(cat "${REPORT_PTR}")"
+  exec "${SCRIPT_DIR}/runner" step-end \
+    --type pinchtab \
+    --report-file "${REPORT_FILE}" \
+    "$@"
+fi
+
+: "${PINCHTAB_CONTAINER:=tools-pinchtab-1}"
+# Use = (not :=) so PINCHTAB_TOKEN="" means "send no auth header" —
+# benchmark step 0.2 uses this to test unauthenticated access (401 expected).
+: "${PINCHTAB_TOKEN=benchmark-token}"
+: "${PINCHTAB_SERVER:=http://localhost:9867}"
+
+args=(docker exec
+  # -i keeps stdin open so pipes/heredocs/<() flow through to pinchtab.
+  # Safe for commands that don't read stdin: the child sees EOF immediately.
+  -i
+  -e "PINCHTAB_TOKEN=${PINCHTAB_TOKEN}"
+  -e "PINCHTAB_SERVER=${PINCHTAB_SERVER}"
+)
+
+if [[ -n "${PINCHTAB_SESSION:-}" ]]; then
+  args+=(-e "PINCHTAB_SESSION=${PINCHTAB_SESSION}")
+fi
+
+if [[ -n "${PINCHTAB_AGENT_ID:-}" ]]; then
+  args+=(-e "PINCHTAB_AGENT_ID=${PINCHTAB_AGENT_ID}")
+fi
+
+args+=("${PINCHTAB_CONTAINER}" pinchtab "$@")
+
+exec "${args[@]}"

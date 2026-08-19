@@ -1,0 +1,38 @@
+{
+  "server": {
+    "bind": "0.0.0.0",
+    "port": "9999",
+    "token": "e2e-token"
+  },
+  "instanceDefaults": {
+    "maxTabs": 2,
+    "stealthLevel": "full"
+  },
+  "multiInstance": {
+    "strategy": "always-on",
+    "allocationPolicy": "fcfs",
+    "restart": {
+      "maxRestarts": 20,
+      "initBackoffSec": 2,
+      "maxBackoffSec": 60,
+      "stableAfterSec": 300
+    }
+  },
+  "security": {
+    "allowEvaluate": false,
+    "allowDownload": false,
+    "allowUpload": false,
+    "allowStateExport": false,
+    "allowedDomains": [
+      "internal-test.invalid",
+      "fixtures"
+    ],
+    "idpi": {
+      "enabled": true,
+      "scanContent": true,
+      "strictMode": true,
+      "wrapContent": true,
+      "shieldThreshold": 30
+    }
+  }
+}

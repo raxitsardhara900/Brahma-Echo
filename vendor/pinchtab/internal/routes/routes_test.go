@@ -1,0 +1,269 @@
+package routes
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestCaptureEndpointIsShorthandAndTabScoped(t *testing.T) {
+	wantShorthand := "GET /capture"
+	found := false
+	for _, route := range ShorthandRoutes() {
+		if route == wantShorthand {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("ShorthandRoutes() missing %s — proxy mux will 404 until the routes catalog entry is added next to the handlers.RegisterRoutes call", wantShorthand)
+	}
+
+	wantTab := "GET /tabs/{id}/capture"
+	found = false
+	for _, route := range TabScopedRoutes() {
+		if route == wantTab {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("TabScopedRoutes() missing %s — the catalog entry's TabScoped flag was likely flipped to false", wantTab)
+	}
+}
+
+func TestSensitiveNetworkEndpointsRequireInterceptCapability(t *testing.T) {
+	want := map[string]bool{
+		"GET /network/{requestId}": false,
+		"POST /network/clear":      false,
+	}
+	for _, ep := range Core() {
+		if _, ok := want[ep.Route()]; !ok {
+			continue
+		}
+		if ep.Capability != CapNetworkIntercept {
+			t.Errorf("%s capability = %q, want %q", ep.Route(), ep.Capability, CapNetworkIntercept)
+		}
+		want[ep.Route()] = true
+	}
+	for route, found := range want {
+		if !found {
+			t.Errorf("Core() missing %s", route)
+		}
+	}
+}
+
+func TestFrameEndpointsAreShorthandAndTabScoped(t *testing.T) {
+	found := map[string]bool{
+		"GET /frame":  false,
+		"POST /frame": false,
+	}
+	for _, route := range ShorthandRoutes() {
+		if _, ok := found[route]; ok {
+			found[route] = true
+		}
+	}
+	for route, ok := range found {
+		if !ok {
+			t.Fatalf("ShorthandRoutes() missing %s", route)
+		}
+	}
+
+	wantTabRoutes := map[string]bool{
+		"GET /tabs/{id}/frame":  false,
+		"POST /tabs/{id}/frame": false,
+	}
+	for _, route := range TabScopedRoutes() {
+		if _, ok := wantTabRoutes[route]; ok {
+			wantTabRoutes[route] = true
+		}
+	}
+	for route, ok := range wantTabRoutes {
+		if !ok {
+			t.Fatalf("TabScopedRoutes() missing %s", route)
+		}
+	}
+}
+
+func TestCloseRoutesAreShorthandAndTabScoped(t *testing.T) {
+	found := false
+	for _, route := range TabScopedRoutes() {
+		if route == "POST /tabs/{id}/close" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("TabScopedRoutes() missing POST /tabs/{id}/close")
+	}
+
+	found = false
+	for _, route := range ShorthandRoutes() {
+		if route == "POST /close" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("ShorthandRoutes() missing POST /close")
+	}
+}
+
+func TestTabOpenAliasAndStateRoutesArePublished(t *testing.T) {
+	tabScopedFound := map[string]bool{
+		"GET /tabs/{id}/state": false,
+	}
+	for _, route := range TabScopedRoutes() {
+		if _, ok := tabScopedFound[route]; ok {
+			tabScopedFound[route] = true
+		}
+	}
+	for route, ok := range tabScopedFound {
+		if !ok {
+			t.Fatalf("TabScopedRoutes() missing %s", route)
+		}
+	}
+}
+
+func TestInspectRoutesAreShorthandAndTabScoped(t *testing.T) {
+	wantShorthand := map[string]bool{
+		"GET /title":  false,
+		"GET /url":    false,
+		"GET /html":   false,
+		"GET /styles": false,
+	}
+	for _, route := range ShorthandRoutes() {
+		if _, ok := wantShorthand[route]; ok {
+			wantShorthand[route] = true
+		}
+	}
+	for route, ok := range wantShorthand {
+		if !ok {
+			t.Fatalf("ShorthandRoutes() missing %s", route)
+		}
+	}
+
+	wantTabScoped := map[string]bool{
+		"GET /tabs/{id}/title":  false,
+		"GET /tabs/{id}/url":    false,
+		"GET /tabs/{id}/html":   false,
+		"GET /tabs/{id}/styles": false,
+	}
+	for _, route := range TabScopedRoutes() {
+		if _, ok := wantTabScoped[route]; ok {
+			wantTabScoped[route] = true
+		}
+	}
+	for route, ok := range wantTabScoped {
+		if !ok {
+			t.Fatalf("TabScopedRoutes() missing %s", route)
+		}
+	}
+}
+
+func TestNoDuplicateRoutes(t *testing.T) {
+	seen := make(map[string]bool)
+	for _, ep := range Core() {
+		key := ep.Route()
+		if seen[key] {
+			t.Errorf("duplicate route: %s", key)
+		}
+		seen[key] = true
+	}
+}
+
+func TestShorthandRoutesExcludeCapabilityGated(t *testing.T) {
+	for _, r := range ShorthandRoutes() {
+		for _, ep := range Core() {
+			if ep.Route() == r && ep.Capability != CapNone {
+				t.Errorf("ShorthandRoutes() includes capability-gated route: %s", r)
+			}
+		}
+	}
+}
+
+func TestTabScopedRoutesFormat(t *testing.T) {
+	for _, r := range TabScopedRoutes() {
+		if !strings.Contains(r, "/tabs/{id}/") {
+			t.Errorf("TabScopedRoutes() returned non-tab-scoped route: %s", r)
+		}
+	}
+}
+
+func TestTabRouteOnNonTabScopedPanics(t *testing.T) {
+	ep := Endpoint{Method: "POST", Path: "/tab", TabScoped: false}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected TabRoute() to panic on non-tab-scoped endpoint")
+		}
+	}()
+	ep.TabRoute()
+}
+
+func TestCapabilityEndpointsGrouping(t *testing.T) {
+	caps := CapabilityEndpoints()
+	if len(caps) == 0 {
+		t.Fatal("expected some capability-gated endpoints")
+	}
+	for cap, eps := range caps {
+		for _, ep := range eps {
+			if ep.Capability != cap {
+				t.Errorf("endpoint %s grouped under %s but has capability %s", ep.Route(), cap, ep.Capability)
+			}
+		}
+	}
+}
+
+// TestEveryGatedCapabilityHasMeta ensures no capability can appear in the
+// catalog without centralized gate metadata — the orchestrator and bridge
+// handlers both rely on Meta() to render the disabled response.
+func TestEveryGatedCapabilityHasMeta(t *testing.T) {
+	for cap := range CapabilityEndpoints() {
+		if _, ok := Meta(cap); !ok {
+			t.Errorf("capability %q is used in the catalog but has no Meta()", cap)
+		}
+	}
+	if _, ok := Meta(CapNone); ok {
+		t.Error("CapNone must not have gate metadata")
+	}
+}
+
+// TestCapabilityMetaContract locks the externally-observable gate strings: the
+// disabled error code and config setting are part of the API contract, so this
+// guards against an accidental rename that would break clients string-matching
+// them.
+func TestCapabilityMetaContract(t *testing.T) {
+	want := map[Capability]CapabilityMeta{
+		CapEvaluate:         {CapEvaluate, "evaluate", "security.allowEvaluate", "evaluate_disabled"},
+		CapMacro:            {CapMacro, "macro", "security.allowMacro", "macro_disabled"},
+		CapScreencast:       {CapScreencast, "screencast", "security.allowScreencast", "screencast_disabled"},
+		CapDownload:         {CapDownload, "download", "security.allowDownload", "download_disabled"},
+		CapCookies:          {CapCookies, "cookies", "security.allowCookies", "cookies_disabled"},
+		CapUpload:           {CapUpload, "upload", "security.allowUpload", "upload_disabled"},
+		CapStateExport:      {CapStateExport, "stateExport", "security.allowStateExport", "state_export_disabled"},
+		CapNetworkIntercept: {CapNetworkIntercept, "networkIntercept", "security.allowNetworkIntercept", "network_intercept_disabled"},
+	}
+	for cap, expected := range want {
+		got, ok := Meta(cap)
+		if !ok {
+			t.Errorf("Meta(%q) missing", cap)
+			continue
+		}
+		if got != expected {
+			t.Errorf("Meta(%q) = %+v, want %+v", cap, got, expected)
+		}
+	}
+}
+
+func TestAllEndpointsHaveMethodAndPath(t *testing.T) {
+	for _, ep := range Core() {
+		if ep.Method == "" {
+			t.Errorf("endpoint with empty method: %+v", ep)
+		}
+		if ep.Path == "" || ep.Path[0] != '/' {
+			t.Errorf("endpoint with invalid path: %+v", ep)
+		}
+		if ep.Summary == "" {
+			t.Errorf("endpoint with empty summary: %s", ep.Route())
+		}
+	}
+}

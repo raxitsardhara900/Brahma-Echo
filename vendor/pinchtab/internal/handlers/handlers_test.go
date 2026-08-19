@@ -1,0 +1,922 @@
+package handlers
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/pinchtab/pinchtab/internal/activity"
+	"github.com/pinchtab/pinchtab/internal/bridge"
+	"github.com/pinchtab/pinchtab/internal/config"
+)
+
+type mockBridge struct {
+	bridge.BridgeAPI
+	failTab           bool
+	createTabURLs     []string
+	lastConsoleLimit  int
+	lastErrorLimit    int
+	fingerprintTabs   map[string]bool
+	frameScopes       map[string]bridge.FrameScope
+	ensureBrowserErr  error
+	ensureBrowserCall int
+	ensureBrowserCfg  *config.RuntimeConfig
+	dialogManager     *bridge.DialogManager
+	executeActionErr  error
+	autoCloseArmed    []string
+	autoCloseCanceled []string
+	availableActions  []string
+	navigateResult    *bridge.NavigateResult
+	navigateErr       error
+	navigateFn        func(context.Context, string, bridge.NavigateParams) (*bridge.NavigateResult, error)
+	closedTabs        []string
+	runningBrowser    string
+	createTabFn       func(string) (string, context.Context, context.CancelFunc, error)
+
+	staticFirstNavigate bool
+	staticEscalate      *bridge.StaticEscalateError
+	navigateParams      []bridge.NavigateParams
+
+	evaluateCalls     int
+	evaluateExprs     []string
+	evaluateFn        func(expression string, result any) error
+	createTabContexts []string
+}
+
+// BrowserContext answers the browser-context generation lookup the error paths
+// consult; a partial mock must still be able to say which browser it is serving.
+func (m *mockBridge) BrowserContext() context.Context { return context.Background() }
+
+func (m *mockBridge) TabContext(tabID string) (*bridge.TabHandle, string, error) {
+	if m.failTab {
+		return nil, "", fmt.Errorf("tab not found")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return bridge.NewTabHandle(ctx), "tab1", nil
+}
+
+func (m *mockBridge) ListTargets() ([]bridge.TabTarget, error) {
+	return []bridge.TabTarget{{TargetID: "tab1", Type: "page", BrowserContextID: "context-profile"}}, nil
+}
+
+func (m *mockBridge) AvailableActions() []string {
+	if m.availableActions != nil {
+		return m.availableActions
+	}
+	return []string{bridge.ActionClick, bridge.ActionType}
+}
+
+func (m *mockBridge) ExecuteAction(ctx context.Context, kind string, req bridge.ActionRequest) (map[string]any, error) {
+	if m.executeActionErr != nil {
+		return nil, m.executeActionErr
+	}
+	return map[string]any{"success": true}, nil
+}
+
+func (m *mockBridge) CreateTab(url string) (string, context.Context, context.CancelFunc, error) {
+	m.createTabURLs = append(m.createTabURLs, url)
+	if m.createTabFn != nil {
+		return m.createTabFn(url)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately - no browser spawned
+	return "tab_abc12345", ctx, cancel, nil
+}
+
+func (m *mockBridge) CreateTabInBrowserContext(url, browserContextID string) (string, context.Context, context.CancelFunc, error) {
+	m.createTabURLs = append(m.createTabURLs, url)
+	m.createTabContexts = append(m.createTabContexts, browserContextID)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return "tab_abc12345", ctx, cancel, nil
+}
+
+func (m *mockBridge) CloseTab(tabID string) error {
+	if tabID == "fail" {
+		return fmt.Errorf("close failed")
+	}
+	m.closedTabs = append(m.closedTabs, tabID)
+	return nil
+}
+
+func (m *mockBridge) FocusTab(tabID string) error {
+	if tabID == "fail" {
+		return fmt.Errorf("tab not found")
+	}
+	return nil
+}
+
+func (m *mockBridge) ScheduleAutoClose(tabID string) {
+	m.autoCloseArmed = append(m.autoCloseArmed, tabID)
+}
+func (m *mockBridge) CancelAutoClose(tabID string) {
+	m.autoCloseCanceled = append(m.autoCloseCanceled, tabID)
+}
+
+func (m *mockBridge) EnsureBrowser(cfg *config.RuntimeConfig) error {
+	m.ensureBrowserCall++
+	m.ensureBrowserCfg = cfg
+	return m.ensureBrowserErr
+}
+
+func (m *mockBridge) RunningBrowser() (string, bool) {
+	return m.runningBrowser, m.runningBrowser != ""
+}
+
+func (m *mockBridge) RestartBrowser(cfg *config.RuntimeConfig) error {
+	return nil
+}
+
+func (m *mockBridge) GetRefCache(tabID string) *bridge.RefCache        { return nil }
+func (m *mockBridge) SetRefCache(tabID string, cache *bridge.RefCache) {}
+func (m *mockBridge) DeleteRefCache(tabID string)                      {}
+
+func (m *mockBridge) Navigate(ctx context.Context, url string, params bridge.NavigateParams) (*bridge.NavigateResult, error) {
+	m.navigateParams = append(m.navigateParams, params)
+	if m.navigateFn != nil {
+		return m.navigateFn(ctx, url, params)
+	}
+	if params.NoEscalate && m.staticEscalate != nil {
+		return nil, m.staticEscalate
+	}
+	if m.navigateErr != nil {
+		return nil, m.navigateErr
+	}
+	if m.navigateResult != nil {
+		return m.navigateResult, nil
+	}
+	return nil, fmt.Errorf("not implemented in test mock")
+}
+
+func (m *mockBridge) StaticFirstNavigate() bool { return m.staticFirstNavigate }
+
+func (m *mockBridge) Snapshot(_ context.Context, _ string, _ string, _ bridge.ContentParams) (*bridge.SnapshotResult, error) {
+	return nil, fmt.Errorf("not implemented in test mock")
+}
+
+func (m *mockBridge) Text(_ context.Context, _ string, _ bridge.ContentParams) (*bridge.TextResult, error) {
+	return nil, fmt.Errorf("not implemented in test mock")
+}
+
+func (m *mockBridge) TabLockInfo(tabID string) *bridge.LockInfo { return nil }
+
+func (m *mockBridge) GetMemoryMetrics(tabID string) (*bridge.MemoryMetrics, error) {
+	return &bridge.MemoryMetrics{JSHeapUsedMB: 10}, nil
+}
+
+func (m *mockBridge) GetBrowserMemoryMetrics() (*bridge.MemoryMetrics, error) {
+	return &bridge.MemoryMetrics{JSHeapUsedMB: 50}, nil
+}
+
+func (m *mockBridge) GetAggregatedMemoryMetrics() (*bridge.MemoryMetrics, error) {
+	return &bridge.MemoryMetrics{JSHeapUsedMB: 50, Nodes: 500}, nil
+}
+
+func (m *mockBridge) GetCrashLogs() []string {
+	return nil
+}
+
+func (m *mockBridge) NetworkMonitor() *bridge.NetworkMonitor {
+	return nil
+}
+
+func (m *mockBridge) GetDialogManager() *bridge.DialogManager {
+	if m.dialogManager == nil {
+		m.dialogManager = bridge.NewDialogManager()
+	}
+	return m.dialogManager
+}
+
+func (m *mockBridge) GetConsoleLogs(tabID string, limit int) []bridge.LogEntry {
+	m.lastConsoleLimit = limit
+	return nil
+}
+
+func (m *mockBridge) ClearConsoleLogs(tabID string) {}
+
+func (m *mockBridge) GetErrorLogs(tabID string, limit int) []bridge.ErrorEntry {
+	m.lastErrorLimit = limit
+	return nil
+}
+
+func (m *mockBridge) ClearErrorLogs(tabID string) {}
+
+func (m *mockBridge) Evaluate(ctx context.Context, expression string, result any, opts bridge.EvalOpts) error {
+	m.evaluateCalls++
+	m.evaluateExprs = append(m.evaluateExprs, expression)
+	if m.evaluateFn != nil {
+		return m.evaluateFn(expression, result)
+	}
+	return nil
+}
+
+func (m *mockBridge) CallFunctionOnNode(ctx context.Context, backendNodeID int64, functionDecl string, args []map[string]any, result any) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (m *mockBridge) EvaluateInFrame(ctx context.Context, frameID string, expression string, result any, opts bridge.EvalOpts) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (m *mockBridge) DescribeNode(ctx context.Context, backendNodeID int64) (*bridge.NodeInfo, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (m *mockBridge) Execute(ctx context.Context, tabID string, task func(ctx context.Context) error) error {
+	return task(ctx)
+}
+
+func (m *mockBridge) GetFrameScope(tabID string) (bridge.FrameScope, bool) {
+	if m.frameScopes == nil {
+		return bridge.FrameScope{}, false
+	}
+	scope, ok := m.frameScopes[tabID]
+	return scope, ok && scope.Active()
+}
+
+func (m *mockBridge) SetFrameScope(tabID string, scope bridge.FrameScope) {
+	if m.frameScopes == nil {
+		m.frameScopes = make(map[string]bridge.FrameScope)
+	}
+	m.frameScopes[tabID] = scope
+}
+
+func (m *mockBridge) ClearFrameScope(tabID string) {
+	delete(m.frameScopes, tabID)
+}
+
+func (m *mockBridge) SetFingerprintRotateActive(tabID string, active bool) {
+	if m.fingerprintTabs == nil {
+		m.fingerprintTabs = make(map[string]bool)
+	}
+	m.fingerprintTabs[tabID] = active
+}
+
+func (m *mockBridge) FingerprintRotateActive(tabID string) bool {
+	return m.fingerprintTabs != nil && m.fingerprintTabs[tabID]
+}
+
+func (m *mockBridge) SetViewport(ctx context.Context, params bridge.ViewportParams) error {
+	return nil
+}
+
+func (m *mockBridge) SetGeolocation(ctx context.Context, lat, lng, accuracy float64) error {
+	return nil
+}
+
+func (m *mockBridge) SetEmulatedMedia(ctx context.Context, feature, value string) error {
+	return nil
+}
+
+func (m *mockBridge) SetNetworkConditions(ctx context.Context, params bridge.NetworkConditions) error {
+	return nil
+}
+
+func (m *mockBridge) SetExtraHTTPHeaders(ctx context.Context, headers map[string]string) error {
+	return nil
+}
+
+func (m *mockBridge) GetCookies(ctx context.Context, urls []string) ([]bridge.CookieData, error) {
+	return nil, nil
+}
+
+func (m *mockBridge) SetCookie(ctx context.Context, params bridge.SetCookieParams) error {
+	return nil
+}
+
+func (m *mockBridge) CurrentURL(ctx context.Context) (string, error) {
+	return "", nil
+}
+
+func (m *mockBridge) CurrentTitle(ctx context.Context) (string, error) {
+	return "", nil
+}
+
+func (m *mockBridge) PrintToPDF(ctx context.Context, params bridge.PDFParams) ([]byte, error) {
+	return nil, nil
+}
+
+func (m *mockBridge) SetFileInputFiles(ctx context.Context, nodeID int64, paths []string) error {
+	return nil
+}
+
+func (m *mockBridge) ResolveSelectorToNodeID(ctx context.Context, selector string) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockBridge) DownloadURL(ctx context.Context, dlURL string, opts bridge.DownloadOpts) (*bridge.DownloadResult, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (m *mockBridge) EnableFetchWithAuth(ctx context.Context) error                          { return nil }
+func (m *mockBridge) DisableFetch(ctx context.Context) error                                 { return nil }
+func (m *mockBridge) ListenAuthRequired(ctx context.Context, handler func(string, bool))     {}
+func (m *mockBridge) ContinueWithAuth(ctx context.Context, requestID, u, p string) error     { return nil }
+func (m *mockBridge) ContinueRequest(ctx context.Context, requestID string) error            { return nil }
+func (m *mockBridge) SetFetchPauseSuppressed(tabID string, v bool)                           {}
+func (m *mockBridge) GoBack(ctx context.Context) (bool, error)                               { return false, nil }
+func (m *mockBridge) GoForward(ctx context.Context) (bool, error)                            { return false, nil }
+func (m *mockBridge) Reload(ctx context.Context) error                                       { return nil }
+func (m *mockBridge) WaitVisible(ctx context.Context, selector string) error                 { return nil }
+func (m *mockBridge) EnableNetwork(ctx context.Context) error                                { return nil }
+func (m *mockBridge) ListenNetworkEvents(ctx context.Context, h2 bridge.NetworkEventHandler) {}
+func (m *mockBridge) SetRawCookie(ctx context.Context, p bridge.RawSetCookieParams) error    { return nil }
+func (m *mockBridge) GetRawCookies(ctx context.Context) ([]bridge.RawCookie, error)          { return nil, nil }
+func (m *mockBridge) SetUserAgentOverride(ctx context.Context, p bridge.UserAgentOverrideParams) error {
+	return nil
+}
+func (m *mockBridge) SetLocaleOverride(ctx context.Context, locale string) error { return nil }
+func (m *mockBridge) SetTimezoneOverride(ctx context.Context, tz string) error   { return nil }
+func (m *mockBridge) SetDeviceMetricsOverride(ctx context.Context, p bridge.DeviceMetricsOverrideParams) error {
+	return nil
+}
+func (m *mockBridge) AddScriptToEvaluateOnNewDocument(ctx context.Context, source string) (string, error) {
+	return "", nil
+}
+
+func TestHandlers(t *testing.T) {
+	h := New(&mockBridge{}, &config.RuntimeConfig{}, nil, nil, nil)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, nil)
+
+	req := httptest.NewRequest("GET", "/help", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected 200 from /help, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "paths") {
+		t.Fatalf("expected /help response to include paths (now alias for openapi.json)")
+	}
+
+	req = httptest.NewRequest("GET", "/openapi.json", nil)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected 200 from /openapi.json, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "openapi") {
+		t.Fatalf("expected /openapi.json response to include openapi")
+	}
+	if !strings.Contains(w.Body.String(), "/browser/restart") {
+		t.Fatalf("expected /openapi.json response to include /browser/restart")
+	}
+
+	req = httptest.NewRequest("GET", "/metrics", nil)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected 200 from /metrics, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "metrics") {
+		t.Fatalf("expected /metrics response to include metrics")
+	}
+}
+
+func TestHelpIncludesSecurityStatus(t *testing.T) {
+	h := New(&mockBridge{}, &config.RuntimeConfig{}, nil, nil, nil)
+
+	req := httptest.NewRequest("GET", "/help", nil)
+	w := httptest.NewRecorder()
+	h.HandleOpenAPI(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200 from /help, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "x-pinchtab-security") {
+		t.Fatalf("expected /help response to include security status")
+	}
+	if !strings.Contains(w.Body.String(), "security.allowEvaluate") {
+		t.Fatalf("expected /help response to include locked setting names")
+	}
+}
+
+func TestOpenAPIIncludesSensitiveEndpointStatus(t *testing.T) {
+	h := New(&mockBridge{}, &config.RuntimeConfig{AllowDownload: true}, nil, nil, nil)
+
+	req := httptest.NewRequest("GET", "/openapi.json", nil)
+	w := httptest.NewRecorder()
+	h.HandleOpenAPI(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200 from /openapi.json, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "\"x-pinchtab-security\"") {
+		t.Fatalf("expected /openapi.json response to include security metadata")
+	}
+	if !strings.Contains(w.Body.String(), "\"x-pinchtab-enabled\":true") {
+		t.Fatalf("expected /openapi.json response to mark enabled sensitive endpoints")
+	}
+}
+
+func TestOpenAPIIncludesEvaluateAwaitPromiseSchema(t *testing.T) {
+	h := New(&mockBridge{}, &config.RuntimeConfig{AllowEvaluate: true}, nil, nil, nil)
+
+	req := httptest.NewRequest("GET", "/openapi.json", nil)
+	w := httptest.NewRecorder()
+	h.HandleOpenAPI(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200 from /openapi.json, got %d", w.Code)
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("unmarshal openapi: %v", err)
+	}
+
+	paths, ok := doc["paths"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected paths object, got %T", doc["paths"])
+	}
+	evaluatePath, ok := paths["/evaluate"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected /evaluate path, got %T", paths["/evaluate"])
+	}
+	post, ok := evaluatePath["post"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected /evaluate POST operation, got %T", evaluatePath["post"])
+	}
+	requestBody, ok := post["requestBody"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected requestBody, got %T", post["requestBody"])
+	}
+	content := requestBody["content"].(map[string]any)
+	appJSON := content["application/json"].(map[string]any)
+	schema := appJSON["schema"].(map[string]any)
+	properties := schema["properties"].(map[string]any)
+	awaitPromise, ok := properties["awaitPromise"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected awaitPromise property, got %T", properties["awaitPromise"])
+	}
+	if awaitPromise["type"] != "boolean" {
+		t.Fatalf("expected awaitPromise type boolean, got %#v", awaitPromise["type"])
+	}
+}
+
+func TestHandleTabMetricsReturns404ForUnknownTab(t *testing.T) {
+	h := New(&mockBridge{failTab: true}, &config.RuntimeConfig{}, nil, nil, nil)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, nil)
+
+	req := httptest.NewRequest("GET", "/tabs/invalid_tab_id/metrics", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 from /tabs/{id}/metrics for unknown tab, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "tab not found") {
+		t.Fatalf("expected not-found response body, got %q", w.Body.String())
+	}
+}
+
+func TestHandleNavigate(t *testing.T) {
+	stubNavigateHostResolution(t, func(context.Context, string, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
+	})
+
+	cfg := &config.RuntimeConfig{}
+	m := &mockBridge{}
+	h := New(m, cfg, nil, nil, nil)
+
+	body := `{"url": "https://pinchtab.com"}`
+	req := httptest.NewRequest("POST", "/navigate", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+	h.HandleNavigate(w, req)
+	// Even with mock context, it might fail inside chromedp.Run if no browser is attached,
+	// but we're testing the handler logic around it.
+	if w.Code != 200 && w.Code != 500 {
+		t.Errorf("unexpected status %d: %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest("GET", "/nav?url=https%3A%2F%2Fpinchtab.com", nil)
+	w = httptest.NewRecorder()
+	h.HandleNavigate(w, req)
+	if w.Code != 200 && w.Code != 500 {
+		t.Errorf("unexpected status for GET navigate %d: %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest("POST", "/navigate", bytes.NewReader([]byte(`{}`)))
+	w = httptest.NewRecorder()
+	h.HandleNavigate(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for missing url, got %d", w.Code)
+	}
+
+	if len(m.createTabURLs) == 0 {
+		t.Fatalf("expected CreateTab to be called for new-tab navigate")
+	}
+	if m.createTabURLs[0] != "" {
+		t.Fatalf("expected HandleNavigate to create a blank tab first, got %q", m.createTabURLs[0])
+	}
+}
+
+func TestHandleTab(t *testing.T) {
+	m := &mockBridge{}
+	h := New(m, &config.RuntimeConfig{}, nil, nil, nil)
+
+	body := `{"action": "new", "url": "about:blank"}`
+	req := httptest.NewRequest("POST", "/tab", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+	h.HandleTab(w, req)
+	if w.Code != 200 && w.Code != 500 {
+		t.Errorf("unexpected status %d", w.Code)
+	}
+	if len(m.createTabURLs) == 0 {
+		t.Fatalf("expected CreateTab to be called for action=new")
+	}
+	if m.createTabURLs[0] != "" {
+		t.Fatalf("expected HandleTab to create a blank tab first, got %q", m.createTabURLs[0])
+	}
+	if got := w.Header().Get(activity.HeaderPTTabID); got != "tab_abc12345" {
+		t.Fatalf("created tab header = %q, want tab_abc12345", got)
+	}
+	if got := w.Header().Get(activity.HeaderPTTabCreated); got != "true" {
+		t.Fatalf("created marker header = %q, want true", got)
+	}
+}
+
+func TestHandleTabCreatesBlankTabInAttestedBrowserContext(t *testing.T) {
+	m := &mockBridge{}
+	h := New(m, &config.RuntimeConfig{}, nil, nil, nil)
+	req := httptest.NewRequest("POST", "/tab", bytes.NewReader([]byte(
+		`{"action":"new","browserContextId":"context-profile"}`,
+	)))
+	w := httptest.NewRecorder()
+	h.HandleTab(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	if !reflect.DeepEqual(m.createTabContexts, []string{"context-profile"}) {
+		t.Fatalf("created contexts = %v, want context-profile", m.createTabContexts)
+	}
+	if !strings.Contains(w.Body.String(), `"browserContextId":"context-profile"`) {
+		t.Fatalf("browser context receipt missing: %s", w.Body.String())
+	}
+}
+
+func TestHandleTabCloseByID(t *testing.T) {
+	h := New(&mockBridge{}, &config.RuntimeConfig{}, nil, nil, nil)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/tabs/tab1/close", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get(activity.HeaderPTTabID); got != "tab1" {
+		t.Fatalf("expected %s=tab1, got %q", activity.HeaderPTTabID, got)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["closed"] != true || resp["tabId"] != "tab1" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func TestHandleClose(t *testing.T) {
+	h := New(&mockBridge{}, &config.RuntimeConfig{}, nil, nil, nil)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/close", bytes.NewReader([]byte(`{"tabId":"tab1"}`)))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get(activity.HeaderPTTabID); got != "tab1" {
+		t.Fatalf("expected %s=tab1, got %q", activity.HeaderPTTabID, got)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["closed"] != true || resp["tabId"] != "tab1" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func TestHandleCloseUsesDefaultTabWhenTabIDIsMissing(t *testing.T) {
+	h := New(&mockBridge{}, &config.RuntimeConfig{}, nil, nil, nil)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/close", bytes.NewReader([]byte(`{}`)))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get(activity.HeaderPTTabID); got != "tab1" {
+		t.Fatalf("expected %s=tab1, got %q", activity.HeaderPTTabID, got)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["closed"] != true || resp["tabId"] != "tab1" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func TestHandleCloseUsesDefaultTabWithEmptyBody(t *testing.T) {
+	h := New(&mockBridge{}, &config.RuntimeConfig{}, nil, nil, nil)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/close", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get(activity.HeaderPTTabID); got != "tab1" {
+		t.Fatalf("expected %s=tab1, got %q", activity.HeaderPTTabID, got)
+	}
+}
+
+func TestHandleTabCloseByIDRejectsMismatchedBodyTabID(t *testing.T) {
+	h := New(&mockBridge{}, &config.RuntimeConfig{}, nil, nil, nil)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/tabs/tab1/close", bytes.NewReader([]byte(`{"tabId":"tab2"}`)))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleGetErrorLogs_ClampsLimit(t *testing.T) {
+	tests := []struct {
+		name     string
+		limit    string
+		expected int
+	}{
+		{name: "negative", limit: "-5", expected: 0},
+		{name: "too_large", limit: "1001", expected: 1000},
+		{name: "in_range", limit: "25", expected: 25},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &mockBridge{}
+			h := New(m, &config.RuntimeConfig{}, nil, nil, nil)
+
+			req := httptest.NewRequest("GET", "/errors?limit="+tt.limit, nil)
+			w := httptest.NewRecorder()
+			h.HandleGetErrorLogs(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", w.Code)
+			}
+			if m.lastErrorLimit != tt.expected {
+				t.Fatalf("expected limit %d, got %d", tt.expected, m.lastErrorLimit)
+			}
+		})
+	}
+}
+
+func TestHandleGetConsoleLogs_ClampsLimit(t *testing.T) {
+	tests := []struct {
+		name     string
+		limit    string
+		expected int
+	}{
+		{name: "negative", limit: "-5", expected: 0},
+		{name: "too_large", limit: "1001", expected: 1000},
+		{name: "in_range", limit: "25", expected: 25},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &mockBridge{}
+			h := New(m, &config.RuntimeConfig{}, nil, nil, nil)
+
+			req := httptest.NewRequest("GET", "/console?limit="+tt.limit, nil)
+			w := httptest.NewRecorder()
+			h.HandleGetConsoleLogs(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", w.Code)
+			}
+			if m.lastConsoleLimit != tt.expected {
+				t.Fatalf("expected limit %d, got %d", tt.expected, m.lastConsoleLimit)
+			}
+		})
+	}
+}
+
+func TestHandleGetConsoleLogs_BlocksWhenCachedTabPolicyIsBlocked(t *testing.T) {
+	b := &policyMockBridge{
+		state: bridge.TabPolicyState{
+			CurrentURL: "https://evil.example.net",
+			Threat:     true,
+			Blocked:    true,
+			Reason:     `domain "evil.example.net" is not in the allowed list`,
+			UpdatedAt:  time.Now(),
+		},
+		hasState: true,
+	}
+	h := New(b, &config.RuntimeConfig{
+		AllowedDomains: []string{"example.com"},
+		IDPI: config.IDPIConfig{
+			Enabled:    true,
+			StrictMode: true,
+		},
+	}, nil, nil, nil)
+
+	req := httptest.NewRequest("GET", "/console?tabId=tab1", nil)
+	w := httptest.NewRecorder()
+	h.HandleGetConsoleLogs(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleGetErrorLogs_BlocksWhenCachedTabPolicyIsBlocked(t *testing.T) {
+	b := &policyMockBridge{
+		state: bridge.TabPolicyState{
+			CurrentURL: "https://evil.example.net",
+			Threat:     true,
+			Blocked:    true,
+			Reason:     `domain "evil.example.net" is not in the allowed list`,
+			UpdatedAt:  time.Now(),
+		},
+		hasState: true,
+	}
+	h := New(b, &config.RuntimeConfig{
+		AllowedDomains: []string{"example.com"},
+		IDPI: config.IDPIConfig{
+			Enabled:    true,
+			StrictMode: true,
+		},
+	}, nil, nil, nil)
+
+	req := httptest.NewRequest("GET", "/errors?tabId=tab1", nil)
+	w := httptest.NewRecorder()
+	h.HandleGetErrorLogs(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleTabFocus(t *testing.T) {
+	h := New(&mockBridge{}, &config.RuntimeConfig{}, nil, nil, nil)
+
+	t.Run("focus success", func(t *testing.T) {
+		body := `{"action": "focus", "tabId": "tab1"}`
+		req := httptest.NewRequest("POST", "/tab", bytes.NewReader([]byte(body)))
+		w := httptest.NewRecorder()
+		h.HandleTab(w, req)
+		if w.Code != 200 {
+			t.Errorf("expected 200, got %d", w.Code)
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp["focused"] != true {
+			t.Error("expected focused=true")
+		}
+		if resp["tabId"] != "tab1" {
+			t.Errorf("expected tabId=tab1, got %v", resp["tabId"])
+		}
+	})
+
+	t.Run("focus missing tabId", func(t *testing.T) {
+		body := `{"action": "focus"}`
+		req := httptest.NewRequest("POST", "/tab", bytes.NewReader([]byte(body)))
+		w := httptest.NewRecorder()
+		h.HandleTab(w, req)
+		if w.Code != 400 {
+			t.Errorf("expected 400, got %d", w.Code)
+		}
+	})
+
+	t.Run("focus not found", func(t *testing.T) {
+		body := `{"action": "focus", "tabId": "fail"}`
+		req := httptest.NewRequest("POST", "/tab", bytes.NewReader([]byte(body)))
+		w := httptest.NewRecorder()
+		h.HandleTab(w, req)
+		if w.Code != 404 {
+			t.Errorf("expected 404, got %d", w.Code)
+		}
+	})
+
+	t.Run("invalid action", func(t *testing.T) {
+		body := `{"action": "invalid"}`
+		req := httptest.NewRequest("POST", "/tab", bytes.NewReader([]byte(body)))
+		w := httptest.NewRecorder()
+		h.HandleTab(w, req)
+		if w.Code != 400 {
+			t.Errorf("expected 400, got %d", w.Code)
+		}
+	})
+}
+
+func TestRoutesRegistration(t *testing.T) {
+	b := &mockBridge{}
+	cfg := &config.RuntimeConfig{}
+	h := New(b, cfg, nil, nil, nil)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, func() {})
+
+	tests := []struct {
+		method string
+		path   string
+		code   int
+	}{
+		{"GET", "/health", 200},
+		{"GET", "/tabs", 200},
+		{"POST", "/browser/restart", 200},
+		{"POST", "/navigate", 400}, // missing body
+	}
+
+	for _, tt := range tests {
+		req := httptest.NewRequest(tt.method, tt.path, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != tt.code {
+			t.Errorf("%s %s expected %d, got %d", tt.method, tt.path, tt.code, w.Code)
+		}
+	}
+}
+
+func TestEvaluateRouteLockedByDefault(t *testing.T) {
+	h := New(&mockBridge{}, &config.RuntimeConfig{}, nil, nil, nil)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, nil)
+
+	req := httptest.NewRequest("POST", "/evaluate", bytes.NewReader([]byte(`{"expression":"1+1"}`)))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != 403 {
+		t.Fatalf("expected 403 when evaluate is disabled, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "security.allowEvaluate") {
+		t.Fatalf("expected evaluate lock response to include the setting name, got %s", w.Body.String())
+	}
+}
+
+func TestEvaluateRouteRegisteredWhenEnabled(t *testing.T) {
+	h := New(&mockBridge{}, &config.RuntimeConfig{AllowEvaluate: true}, nil, nil, nil)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, nil)
+
+	req := httptest.NewRequest("POST", "/evaluate", bytes.NewReader([]byte(`not json`)))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("expected evaluate route to be active, got %d", w.Code)
+	}
+}
+
+func TestSensitiveTabRouteLockedByDefault(t *testing.T) {
+	h := New(&mockBridge{}, &config.RuntimeConfig{}, nil, nil, nil)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, nil)
+
+	req := httptest.NewRequest("POST", "/tabs/tab1/evaluate", bytes.NewReader([]byte(`{"expression":"1+1"}`)))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != 403 {
+		t.Fatalf("expected 403 when tab evaluate is disabled, got %d", w.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if payload["code"] != "evaluate_disabled" {
+		t.Fatalf("expected evaluate_disabled code, got %v", payload["code"])
+	}
+}

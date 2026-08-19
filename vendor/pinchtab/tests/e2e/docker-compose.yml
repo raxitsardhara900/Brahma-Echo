@@ -1,0 +1,115 @@
+# Log level for every `pinchtab server` service below: `--log-level debug`, named
+# here rather than inherited. A harness whose logs exist to explain a failing
+# scenario wants maximum detail, and log volume is cheap in a CI artifact. The
+# level is stated in this file because the previous spelling borrowed `--verbose`,
+# whose meaning changed elsewhere (it once meant "log at all", then came to mean
+# "debug"), and the level silently moved with it. `--log-level` wins over any
+# config file, so nothing under tests/e2e/config/ can override it.
+#
+# `--verbose` is kept alongside for the two things it alone puts in the artifact,
+# both gated on cfg.VerboseBanner in internal/server/server.go: the startup banner,
+# whose security line reads `security  ELEVATED`, and cli.LogSecurityWarnings — four
+# `category=security` WARN lines (sensitive_endpoints_enabled, non_loopback_bind,
+# idpi_warn_mode, attach_external_hosts with its `allowHosts` list) that vanish
+# entirely without the flag. The warnings are the diagnostic half; the attach
+# `allowHosts` list is the attach trust boundary, NOT the netguard allowed domains.
+# Nothing in the server log prints the netguard allowlist at any level — `Guard: UP`
+# and `Allowed domains:` come from cmd_wizard.go, the interactive setup wizard, and
+# never reach a `docker compose logs` capture.
+#
+# Both flags must stay, and the reason is a precedence detail worth stating exactly.
+# `--verbose` contributes ONLY the banner *while* `--log-level` is set: applyLogLevel
+# returns early on a non-empty level and never reaches its verbose branch. Remove
+# `--log-level` and `--verbose` governs the level again, setting debug on its own —
+# so the two are not orthogonal, the older coupling is masked by both being present.
+# Dropping `--log-level` would not change the level observed today, which is what
+# makes the trap quiet: it would silently hand the level back to a flag whose meaning
+# has already migrated once, which is the drift this file exists to prevent.
+services:
+  pinchtab:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment:
+      PINCHTAB_CONFIG: /data/e2e-config/pinchtab.json
+    volumes:
+      - ./config/pinchtab.json:/fixture-config/pinchtab.json:ro
+      - ./fixtures/test-extension:/extensions/test-extension:ro
+      - ./fixtures/test-extension-api:/extensions/test-extension-api:ro
+    command: ["/bin/sh", "-lc", "mkdir -p /data/e2e-config && cp /fixture-config/pinchtab.json /data/e2e-config/pinchtab.json && exec /usr/local/bin/docker-entrypoint.sh pinchtab server --log-level debug --verbose"]
+    ports:
+      - "127.0.0.1:9999:9999"
+    shm_size: '2gb'
+    healthcheck:
+      test: ["CMD-SHELL", "wget --header='Authorization: Bearer e2e-token' -q -O /dev/null http://localhost:9999/health"]
+      interval: 1s
+      timeout: 10s
+      retries: 30
+      start_period: 5s
+
+  fixtures:
+    # Custom image: nginx + baked-in default.conf with httpbin-compatible
+    # /redirect/N, /redirect-to, and /get endpoints. Baking the config in
+    # avoids bind-mount races where the new conf doesn't get picked up on
+    # `docker compose up` without a forced recreate.
+    build:
+      context: ./nginx
+    volumes:
+      # Serves static test assets for deterministic, offline-safe E2E downloads.
+      - ./fixtures:/usr/share/nginx/html:ro
+    networks:
+      default:
+        # Second hostname that points at the same nginx. Used by IDPI
+        # same-tab pivot tests: the page navigates from `fixtures` (in the
+        # IDPI allowlist) to `pivot-target` (not in the allowlist) to
+        # simulate a cross-domain pivot while staying fully offline.
+        aliases:
+          - fixtures
+          - pivot-target
+          # Dedicated host whose nginx vhost roots at the scrape-site/ subdir,
+          # so a seaportal crawl of http://scrapesite/ finds the scrape fixture.
+          - scrapesite
+    healthcheck:
+      # Verify BOTH that nginx is up AND that the custom config is the one
+      # actually loaded. /get is a synthetic endpoint defined only in
+      # tests/e2e/nginx/default.conf — if it returns 200 we know the baked
+      # config is live; if it 404s the container stays unhealthy and the
+      # test runner refuses to start, which surfaces "stale image / config
+      # not loaded" failures up front instead of as opaque test errors.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:80/ && wget -q -O /dev/null http://localhost:80/get"]
+      interval: 1s
+      timeout: 5s
+      retries: 10
+
+  runner-api:
+    build:
+      context: ./runner-api
+    depends_on:
+      pinchtab:
+        condition: service_healthy
+      fixtures:
+        condition: service_healthy
+    environment:
+      - E2E_SERVER=http://pinchtab:9999
+      - E2E_SERVER_TOKEN=e2e-token
+      - FIXTURES_URL=http://fixtures:80
+    volumes:
+      - ./:/e2e:ro
+      - ./results:/results
+
+  runner-cli:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/runner-cli/Dockerfile
+    depends_on:
+      pinchtab:
+        condition: service_healthy
+      fixtures:
+        condition: service_healthy
+    environment:
+      - E2E_SERVER=http://pinchtab:9999
+      - E2E_SERVER_TOKEN=e2e-token
+      - FIXTURES_URL=http://fixtures:80
+    volumes:
+      - ./:/e2e:ro
+      - ./results:/results

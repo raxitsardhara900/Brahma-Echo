@@ -1,0 +1,100 @@
+package handlers
+
+import (
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/pinchtab/pinchtab/internal/activity"
+	"github.com/pinchtab/pinchtab/internal/authn"
+	"github.com/pinchtab/pinchtab/internal/bridge"
+	"github.com/pinchtab/pinchtab/internal/httpx"
+)
+
+func (h *Handlers) HandleTabLock(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TabID      string `json:"tabId"`
+		Owner      string `json:"owner"`
+		TimeoutSec int    `json:"timeoutSec"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodySize)).Decode(&req); err != nil {
+		httpx.Error(w, 400, fmt.Errorf("decode: %w", err))
+		return
+	}
+	if req.TabID == "" || req.Owner == "" {
+		httpx.Error(w, 400, fmt.Errorf("tabId and owner required"))
+		return
+	}
+
+	timeout := bridge.DefaultLockTimeout
+	if req.TimeoutSec > 0 {
+		timeout = time.Duration(req.TimeoutSec) * time.Second
+	}
+
+	if err := h.Bridge.Lock(req.TabID, req.Owner, timeout); err != nil {
+		httpx.Error(w, 409, err)
+		return
+	}
+
+	h.recordActivity(r, activity.Update{Action: "tab.lock", TabID: req.TabID})
+
+	lock := h.Bridge.TabLockInfo(req.TabID)
+	httpx.JSON(w, 200, map[string]any{
+		"locked":    true,
+		"owner":     lock.Owner,
+		"expiresAt": lock.ExpiresAt.Format(time.RFC3339),
+	})
+}
+
+func (h *Handlers) HandleTabUnlock(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TabID string `json:"tabId"`
+		Owner string `json:"owner"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodySize)).Decode(&req); err != nil {
+		httpx.Error(w, 400, fmt.Errorf("decode: %w", err))
+		return
+	}
+	if req.TabID == "" || req.Owner == "" {
+		httpx.Error(w, 400, fmt.Errorf("tabId and owner required"))
+		return
+	}
+
+	if err := h.Bridge.Unlock(req.TabID, req.Owner); err != nil {
+		httpx.Error(w, 409, err)
+		return
+	}
+
+	h.recordActivity(r, activity.Update{Action: "tab.unlock", TabID: req.TabID})
+
+	httpx.JSON(w, 200, map[string]any{"unlocked": true})
+}
+
+// HandleTabLockByID locks a tab identified by path ID.
+//
+// @Endpoint POST /tabs/{id}/lock
+func (h *Handlers) HandleTabLockByID(w http.ResponseWriter, r *http.Request) {
+	h.withPathTabIDBody(w, r, h.HandleTabLock)
+}
+
+// HandleTabUnlockByID unlocks a tab identified by path ID.
+//
+// @Endpoint POST /tabs/{id}/unlock
+func (h *Handlers) HandleTabUnlockByID(w http.ResponseWriter, r *http.Request) {
+	h.withPathTabIDBody(w, r, h.HandleTabUnlock)
+}
+
+func (h *Handlers) HandleShutdown(shutdownFn func()) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		slog.Info("shutdown requested via API")
+		authn.AuditLog(r, "system.shutdown_requested")
+		httpx.JSON(w, 200, map[string]any{"status": "shutting down"})
+
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			shutdownFn()
+		}()
+	}
+}

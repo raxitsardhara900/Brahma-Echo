@@ -1,0 +1,41 @@
+{
+  "name": "@pinchtab/pinchtab",
+  "version": "0.3.0",
+  "description": "OpenClaw plugin for PinchTab browser control",
+  "type": "module",
+  "scripts": {
+    "sync:skills": "node ./scripts/sync-skills.mjs",
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "pretest": "npm run sync:skills",
+    "prepack": "npm run clean && npm run sync:skills && npm run build",
+    "test": "tsx --test *.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2"
+    },
+    "build": {
+      "openclawVersion": "2026.6.9"
+    }
+  },
+  "files": [
+    "dist/",
+    "skills/",
+    "scripts/sync-skills.mjs",
+    "openclaw.plugin.json"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "openclaw": "2026.6.9",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "packageManager": "npm@11.17.0+sha512.3eeaf18997b11070d313849268b23766b9db0068997dec9471073170fe43fa17f2b4d0337bf0f52330ee2274e7f5754b21b01052742e48f5c9c74d8b1e32ef43"
+}

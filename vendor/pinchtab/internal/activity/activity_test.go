@@ -1,0 +1,810 @@
+package activity
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/pinchtab/pinchtab/internal/browserops"
+)
+
+func TestQueryKeepsNewestWithinLimitInOrder(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		if err := store.Record(Event{
+			Timestamp: now.Add(time.Duration(i) * time.Second),
+			Source:    "client",
+			AgentID:   "a",
+			Path:      fmt.Sprintf("/e%d", i),
+			Method:    "GET",
+			Status:    200,
+		}); err != nil {
+			t.Fatalf("Record %d: %v", i, err)
+		}
+	}
+
+	got, err := store.Query(Filter{Source: "client", Limit: 3})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	// Newest 3 matches, chronological ascending: /e2, /e3, /e4.
+	want := []string{"/e2", "/e3", "/e4"}
+	if len(got) != len(want) {
+		t.Fatalf("len(got) = %d, want %d", len(got), len(want))
+	}
+	for i, p := range want {
+		if got[i].Path != p {
+			t.Fatalf("got[%d].Path = %q, want %q (full order: %v)", i, got[i].Path, p, paths(got))
+		}
+	}
+}
+
+func paths(evs []Event) []string {
+	out := make([]string, len(evs))
+	for i, e := range evs {
+		out[i] = e.Path
+	}
+	return out
+}
+
+func TestTailReaderLosslessUnderLimit(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		if err := store.Record(Event{
+			Timestamp: now.Add(time.Duration(i) * time.Second),
+			Source:    "client",
+			AgentID:   "a",
+			Path:      fmt.Sprintf("/e%d", i),
+			Method:    "GET",
+			Status:    200,
+		}); err != nil {
+			t.Fatalf("Record %d: %v", i, err)
+		}
+	}
+
+	reader := store.NewTailReader("client")
+
+	// Paginate in pages of 2; every record must appear exactly once, in order —
+	// no records skipped by buffered read-ahead past the limit break.
+	var got []string
+	for {
+		page, err := reader.Read(2)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		if len(page) > 2 {
+			t.Fatalf("page len = %d, want <= 2", len(page))
+		}
+		for _, e := range page {
+			got = append(got, e.Path)
+		}
+	}
+
+	want := []string{"/e0", "/e1", "/e2", "/e3", "/e4"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d records %v, want %d %v", len(got), got, len(want), want)
+	}
+	for i, p := range want {
+		if got[i] != p {
+			t.Fatalf("record[%d] = %q, want %q (full: %v)", i, got[i], p, got)
+		}
+	}
+}
+
+func TestTailReaderDrainsPreviousDayOnRollover(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 365) // high retention so yesterday isn't pruned
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	yesterdayNoon := time.Now().UTC().AddDate(0, 0, -1).Truncate(24 * time.Hour).Add(12 * time.Hour)
+	todayNoon := time.Now().UTC().Truncate(24 * time.Hour).Add(12 * time.Hour)
+
+	rec := func(ts time.Time, path string) {
+		if err := store.Record(Event{Timestamp: ts, Source: "client", AgentID: "a", Path: path, Method: "GET", Status: 200}); err != nil {
+			t.Fatalf("Record %s: %v", path, err)
+		}
+	}
+
+	// First event lands in yesterday's file; the reader (clock pinned to yesterday)
+	// tails it and parks its cursor at yesterday's EOF.
+	rec(yesterdayNoon, "/y1")
+	reader := store.NewTailReader("client")
+	reader.now = func() time.Time { return yesterdayNoon }
+
+	first, err := reader.Read(100)
+	if err != nil {
+		t.Fatalf("Read (yesterday): %v", err)
+	}
+	if len(first) != 1 || first[0].Path != "/y1" {
+		t.Fatalf("first read = %+v, want [/y1]", first)
+	}
+
+	// More activity lands in yesterday's file AFTER the poll (before midnight), then
+	// the day rolls over and a today event arrives.
+	rec(yesterdayNoon.Add(time.Minute), "/y2")
+	rec(todayNoon, "/t1")
+	reader.now = func() time.Time { return todayNoon }
+
+	// The rollover read must drain yesterday's unread tail (/y2) THEN today's (/t1),
+	// in order — the old reset-to-today behavior would lose /y2.
+	second, err := reader.Read(100)
+	if err != nil {
+		t.Fatalf("Read (rollover): %v", err)
+	}
+	gotPaths := make([]string, len(second))
+	for i, e := range second {
+		gotPaths[i] = e.Path
+	}
+	want := []string{"/y2", "/t1"}
+	if len(gotPaths) != len(want) {
+		t.Fatalf("rollover read = %v, want %v (yesterday tail must not be skipped)", gotPaths, want)
+	}
+	for i, p := range want {
+		if gotPaths[i] != p {
+			t.Fatalf("rollover[%d] = %q, want %q (full: %v)", i, gotPaths[i], p, gotPaths)
+		}
+	}
+}
+
+func TestTailReadersHaveIndependentCursors(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	now := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		if err := store.Record(Event{
+			Timestamp: now.Add(time.Duration(i) * time.Second),
+			Source:    "client",
+			AgentID:   "a",
+			Path:      "/x",
+			Method:    "GET",
+			Status:    200,
+		}); err != nil {
+			t.Fatalf("Record %d: %v", i, err)
+		}
+	}
+
+	readerA := store.NewTailReader("client")
+	readerB := store.NewTailReader("client")
+
+	// Reader A drains all events, then sees nothing on the next read.
+	first, err := readerA.Read(100)
+	if err != nil {
+		t.Fatalf("readerA.Read: %v", err)
+	}
+	if len(first) != 3 {
+		t.Fatalf("readerA first read = %d events, want 3", len(first))
+	}
+	again, err := readerA.Read(100)
+	if err != nil {
+		t.Fatalf("readerA.Read again: %v", err)
+	}
+	if len(again) != 0 {
+		t.Fatalf("readerA second read = %d events, want 0 (cursor should have advanced)", len(again))
+	}
+
+	// Reader B has its own cursor and must still see all events.
+	b, err := readerB.Read(100)
+	if err != nil {
+		t.Fatalf("readerB.Read: %v", err)
+	}
+	if len(b) != 3 {
+		t.Fatalf("readerB read = %d events, want 3 (cursors must be independent)", len(b))
+	}
+}
+
+func TestStoreRecordAndQuery(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	now := time.Now().UTC()
+	events := []Event{
+		{Timestamp: now.Add(-2 * time.Minute), Source: "server", AgentID: "cli", TabID: "tab-1", Path: "/tabs/tab-1/text", Method: "GET", Status: 200},
+		{Timestamp: now.Add(-1 * time.Minute), Source: "bridge", AgentID: "mcp", TabID: "tab-2", Path: "/tabs/tab-2/action", Method: "POST", Status: 200},
+	}
+	for _, evt := range events {
+		if err := store.Record(evt); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+
+	got, err := store.Query(Filter{TabID: "tab-2", Limit: 10})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].AgentID != "mcp" {
+		t.Fatalf("AgentID = %q, want mcp", got[0].AgentID)
+	}
+}
+
+func TestStoreQueryFiltersByAgentID(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	now := time.Now().UTC()
+	events := []Event{
+		{Timestamp: now.Add(-2 * time.Minute), Source: "server", AgentID: "cli", Path: "/tabs/tab-1/text", Method: "GET", Status: 200},
+		{Timestamp: now.Add(-1 * time.Minute), Source: "bridge", AgentID: "mcp", Path: "/tabs/tab-2/action", Method: "POST", Status: 200},
+	}
+	for _, evt := range events {
+		if err := store.Record(evt); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+
+	got, err := store.Query(Filter{AgentID: "cli", Limit: 10})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].AgentID != "cli" {
+		t.Fatalf("AgentID = %q, want cli", got[0].AgentID)
+	}
+}
+
+func TestStoreWritesJSONLFile(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root, 1)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := store.Record(Event{
+		Timestamp: now,
+		Source:    "server",
+		Method:    "GET",
+		Path:      "/health",
+		Status:    200,
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	path := filepath.Join(root, "events-"+now.Format(time.DateOnly)+".jsonl")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("activity log missing: %v", err)
+	}
+}
+
+func TestStorePartitionsDashboardEventsOutsidePrimaryLog(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root, 1)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if err := store.Record(Event{
+		Timestamp: now,
+		Source:    "dashboard",
+		Method:    "GET",
+		Path:      "/api/events",
+		Status:    200,
+	}); err != nil {
+		t.Fatalf("Record dashboard: %v", err)
+	}
+	if err := store.Record(Event{
+		Timestamp: now.Add(time.Second),
+		Source:    "server",
+		Method:    "GET",
+		Path:      "/health",
+		Status:    200,
+	}); err != nil {
+		t.Fatalf("Record server: %v", err)
+	}
+
+	mainPath := filepath.Join(root, "events-"+now.Format(time.DateOnly)+".jsonl")
+	mainData, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatalf("ReadFile main: %v", err)
+	}
+	if strings.Contains(string(mainData), "\"source\":\"dashboard\"") {
+		t.Fatal("primary activity log should not include dashboard events")
+	}
+	if !strings.Contains(string(mainData), "\"source\":\"server\"") {
+		t.Fatal("primary activity log should include server events")
+	}
+
+	dashboardPath := filepath.Join(root, "events-dashboard-"+now.Format(time.DateOnly)+".jsonl")
+	dashboardData, err := os.ReadFile(dashboardPath)
+	if err != nil {
+		t.Fatalf("ReadFile dashboard: %v", err)
+	}
+	if !strings.Contains(string(dashboardData), "\"source\":\"dashboard\"") {
+		t.Fatal("dashboard activity log missing dashboard event")
+	}
+
+	gotAll, err := store.Query(Filter{Limit: 10})
+	if err != nil {
+		t.Fatalf("Query all: %v", err)
+	}
+	if len(gotAll) != 2 {
+		t.Fatalf("unfiltered query = %d events, want 2 (server + dashboard)", len(gotAll))
+	}
+
+	gotDashboard, err := store.Query(Filter{Source: "dashboard", Limit: 10})
+	if err != nil {
+		t.Fatalf("Query dashboard: %v", err)
+	}
+	if len(gotDashboard) != 1 || gotDashboard[0].Source != "dashboard" {
+		t.Fatalf("dashboard query = %#v, want dashboard event", gotDashboard)
+	}
+
+	gotServer, err := store.Query(Filter{Source: "server", Limit: 10})
+	if err != nil {
+		t.Fatalf("Query server: %v", err)
+	}
+	if len(gotServer) != 1 || gotServer[0].Source != "server" {
+		t.Fatalf("server query = %#v, want one deduplicated server event", gotServer)
+	}
+}
+
+func TestStoreWritesServerEventsToSourcePartitionToo(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root, 1)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if err := store.Record(Event{
+		Timestamp: now,
+		Source:    "server",
+		Method:    "POST",
+		Path:      "/sessions",
+		Status:    401,
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	mainPath := filepath.Join(root, "events-"+now.Format(time.DateOnly)+".jsonl")
+	mainData, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatalf("ReadFile main: %v", err)
+	}
+	if !strings.Contains(string(mainData), "\"source\":\"server\"") {
+		t.Fatal("primary activity log should include server events")
+	}
+
+	serverPath := filepath.Join(root, "events-server-"+now.Format(time.DateOnly)+".jsonl")
+	serverData, err := os.ReadFile(serverPath)
+	if err != nil {
+		t.Fatalf("ReadFile server: %v", err)
+	}
+	if !strings.Contains(string(serverData), "\"source\":\"server\"") {
+		t.Fatal("server partition log should include server events")
+	}
+}
+
+func TestStoreWithEventsRecordsClientOnlyByDefaultPolicy(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStoreWithEvents(root, 1, EventSourceConfig{})
+	if err != nil {
+		t.Fatalf("NewStoreWithEvents: %v", err)
+	}
+
+	now := time.Now().UTC()
+	for _, evt := range []Event{
+		{Timestamp: now, Source: "client", Method: "GET", Path: "/text", Status: 200},
+		{Timestamp: now.Add(time.Second), Source: "server", Method: "GET", Path: "/health", Status: 200},
+		{Timestamp: now.Add(2 * time.Second), Source: "dashboard", Method: "GET", Path: "/api/events", Status: 200},
+		{Timestamp: now.Add(3 * time.Second), Source: "orchestrator", Method: "GET", Path: "/instances", Status: 200},
+	} {
+		if err := store.Record(evt); err != nil {
+			t.Fatalf("Record(%s): %v", evt.Source, err)
+		}
+	}
+
+	gotAll, err := store.Query(Filter{Limit: 10})
+	if err != nil {
+		t.Fatalf("Query all: %v", err)
+	}
+	if len(gotAll) != 1 || gotAll[0].Source != "client" {
+		t.Fatalf("unfiltered query = %#v, want single client event", gotAll)
+	}
+
+	clientPath := filepath.Join(root, "events-client-"+now.Format(time.DateOnly)+".jsonl")
+	clientData, err := os.ReadFile(clientPath)
+	if err != nil {
+		t.Fatalf("ReadFile client: %v", err)
+	}
+	if !strings.Contains(string(clientData), "\"source\":\"client\"") {
+		t.Fatal("client activity log should include client events")
+	}
+	if strings.Contains(string(clientData), "\"source\":\"server\"") ||
+		strings.Contains(string(clientData), "\"source\":\"dashboard\"") ||
+		strings.Contains(string(clientData), "\"source\":\"orchestrator\"") {
+		t.Fatal("client activity log should exclude disabled non-client events")
+	}
+
+	for _, source := range []string{"dashboard", "server", "orchestrator"} {
+		path := filepath.Join(root, "events-"+source+"-"+now.Format(time.DateOnly)+".jsonl")
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s activity log should not exist, stat err = %v", source, err)
+		}
+	}
+}
+
+func TestStorePrunesExpiredDailyFiles(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root, 1)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	oldDay := time.Now().UTC().AddDate(0, 0, -1)
+	if err := store.Record(Event{
+		Timestamp: oldDay,
+		Source:    "server",
+		Method:    "GET",
+		Path:      "/old",
+		Status:    200,
+	}); err != nil {
+		t.Fatalf("Record old: %v", err)
+	}
+	if err := store.Record(Event{
+		Timestamp: time.Now().UTC(),
+		Source:    "server",
+		Method:    "GET",
+		Path:      "/new",
+		Status:    200,
+	}); err != nil {
+		t.Fatalf("Record new: %v", err)
+	}
+
+	oldPath := filepath.Join(root, "events-"+oldDay.Format(time.DateOnly)+".jsonl")
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("expected old activity file to be pruned, stat err = %v", err)
+	}
+}
+
+func TestNewStorePrunesExpiredDailyFilesOnStartup(t *testing.T) {
+	root := t.TempDir()
+	activityDir := root
+	if err := os.MkdirAll(activityDir, 0750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	oldDay := time.Now().UTC().AddDate(0, 0, -31)
+	oldPath := filepath.Join(activityDir, "events-"+oldDay.Format(time.DateOnly)+".jsonl")
+	if err := os.WriteFile(oldPath, []byte("{\"path\":\"/old\"}\n"), 0600); err != nil {
+		t.Fatalf("WriteFile old: %v", err)
+	}
+
+	keepDay := time.Now().UTC()
+	keepPath := filepath.Join(activityDir, "events-"+keepDay.Format(time.DateOnly)+".jsonl")
+	if err := os.WriteFile(keepPath, []byte("{\"path\":\"/new\"}\n"), 0600); err != nil {
+		t.Fatalf("WriteFile keep: %v", err)
+	}
+
+	if _, err := NewStore(root, 30); err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("expected expired activity file to be pruned on startup, stat err = %v", err)
+	}
+	if _, err := os.Stat(keepPath); err != nil {
+		t.Fatalf("expected current activity file to remain, stat err = %v", err)
+	}
+}
+
+func TestNewStorePrunesExpiredSourceSpecificDailyFilesOnStartup(t *testing.T) {
+	root := t.TempDir()
+	activityDir := root
+	if err := os.MkdirAll(activityDir, 0750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	oldDay := time.Now().UTC().AddDate(0, 0, -31)
+	oldPath := filepath.Join(activityDir, "events-dashboard-"+oldDay.Format(time.DateOnly)+".jsonl")
+	if err := os.WriteFile(oldPath, []byte("{\"source\":\"dashboard\"}\n"), 0600); err != nil {
+		t.Fatalf("WriteFile old: %v", err)
+	}
+
+	keepDay := time.Now().UTC()
+	keepPath := filepath.Join(activityDir, "events-dashboard-"+keepDay.Format(time.DateOnly)+".jsonl")
+	if err := os.WriteFile(keepPath, []byte("{\"source\":\"dashboard\"}\n"), 0600); err != nil {
+		t.Fatalf("WriteFile keep: %v", err)
+	}
+
+	if _, err := NewStore(root, 30); err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("expected expired source-specific activity file to be pruned, stat err = %v", err)
+	}
+	if _, err := os.Stat(keepPath); err != nil {
+		t.Fatalf("expected current source-specific activity file to remain, stat err = %v", err)
+	}
+}
+
+func TestNewRecorderDisabledReturnsNoop(t *testing.T) {
+	rec, err := NewRecorder(Config{}, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	if rec.Enabled() {
+		t.Fatal("expected disabled recorder")
+	}
+}
+
+func TestNewStoreRejectsZeroRetentionDays(t *testing.T) {
+	if _, err := NewStore(t.TempDir(), 0); err == nil {
+		t.Fatal("expected NewStore to reject zero retentionDays")
+	}
+}
+
+func TestClampQueryLimit(t *testing.T) {
+	if got := clampQueryLimit(0); got != defaultQueryLimit {
+		t.Fatalf("clampQueryLimit(0) = %d, want %d", got, defaultQueryLimit)
+	}
+	if got := clampQueryLimit(maxQueryLimit + 1); got != maxQueryLimit {
+		t.Fatalf("clampQueryLimit(max+1) = %d, want %d", got, maxQueryLimit)
+	}
+	if got := clampQueryLimit(25); got != 25 {
+		t.Fatalf("clampQueryLimit(25) = %d, want 25", got)
+	}
+}
+
+func TestDayInRange(t *testing.T) {
+	cases := []struct {
+		day, since, until string
+		want              bool
+	}{
+		{"2026-06-20", "", "", true},                     // unbounded
+		{"2026-06-20", "2026-06-20", "2026-06-20", true}, // equal both ends (inclusive)
+		{"2026-06-19", "2026-06-20", "", false},          // before since
+		{"2026-06-21", "", "2026-06-20", false},          // after until
+		{"2026-06-20", "2026-06-19", "2026-06-21", true}, // inside window
+		{"2026-06-19", "2026-06-19", "", true},           // at since lower bound
+		{"2026-06-21", "", "2026-06-21", true},           // at until upper bound
+	}
+	for _, c := range cases {
+		if got := dayInRange(c.day, c.since, c.until); got != c.want {
+			t.Errorf("dayInRange(%q, %q, %q) = %v, want %v", c.day, c.since, c.until, got, c.want)
+		}
+	}
+}
+
+func TestQueryFiltersBySinceUntil(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 365) // high retention so neither day is pruned
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// Two client events on distinct days → distinct daily files (events-client-<day>.jsonl).
+	dayOne := time.Now().UTC().AddDate(0, 0, -2).Truncate(24 * time.Hour).Add(12 * time.Hour)
+	dayTwo := time.Now().UTC().AddDate(0, 0, -1).Truncate(24 * time.Hour).Add(12 * time.Hour)
+	for _, evt := range []Event{
+		{Timestamp: dayOne, Source: "client", AgentID: "a", Path: "/one", Method: "GET", Status: 200},
+		{Timestamp: dayTwo, Source: "client", AgentID: "b", Path: "/two", Method: "GET", Status: 200},
+	} {
+		if err := store.Record(evt); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+
+	// A window covering only dayTwo must return just that day's event — the dayOne
+	// file is skipped by the coarse day prefilter, and matches confirms the bound.
+	got, err := store.Query(Filter{
+		Since: dayTwo.Truncate(24 * time.Hour),
+		Until: dayTwo.Truncate(24 * time.Hour).Add(24*time.Hour - time.Nanosecond),
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1 (only the dayTwo event in window)", len(got))
+	}
+	if got[0].AgentID != "b" || got[0].Path != "/two" {
+		t.Fatalf("got %+v, want the dayTwo event (agent b, /two)", got[0])
+	}
+
+	// An unbounded query still returns both (no filtering regression).
+	all, err := store.Query(Filter{Limit: 10})
+	if err != nil {
+		t.Fatalf("Query unbounded: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("unbounded len = %d, want 2", len(all))
+	}
+}
+
+func TestStoreRecord_SanitizesURLBeforePersisting(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root, 1)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if err := store.Record(Event{
+		Timestamp: now,
+		Source:    "server",
+		Method:    "GET",
+		Path:      "/navigate",
+		Status:    200,
+		URL:       "https://user:pass@example.com/callback?code=secret#done",
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	path := filepath.Join(root, "events-"+now.Format(time.DateOnly)+".jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	var evt Event
+	if err := json.Unmarshal(data[:len(data)-1], &evt); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if evt.URL != "https://example.com/callback" {
+		t.Fatalf("evt.URL = %q, want sanitized URL", evt.URL)
+	}
+}
+
+func TestEventRouteMetadataSerialization(t *testing.T) {
+	evt := Event{
+		Timestamp:  time.Now().UTC(),
+		Source:     "server",
+		Method:     "POST",
+		Path:       "/navigate",
+		Status:     200,
+		DurationMs: 42,
+		Route: &browserops.RouteMetadata{
+			RequestedBrowser: "chrome",
+			UsedBrowser:      "chrome",
+			Attempts: []browserops.RouteAttempt{
+				{Browser: "chrome", Accepted: true},
+			},
+		},
+	}
+
+	data, err := json.Marshal(evt)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	routeRaw, ok := m["route"]
+	if !ok {
+		t.Fatal("expected \"route\" key in serialized event")
+	}
+	route, ok := routeRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("route is %T, want map[string]any", routeRaw)
+	}
+
+	// Must use provider naming.
+	if _, ok := route["requestedProvider"]; !ok {
+		t.Fatal("route missing \"requestedProvider\" key")
+	}
+	if _, ok := route["usedProvider"]; !ok {
+		t.Fatal("route missing \"usedProvider\" key")
+	}
+	if got := route["requestedProvider"]; got != "chrome" {
+		t.Fatalf("requestedProvider = %v, want \"chrome\"", got)
+	}
+	if got := route["usedProvider"]; got != "chrome" {
+		t.Fatalf("usedProvider = %v, want \"chrome\"", got)
+	}
+
+	// Must NOT use browserops/provider naming at the route level.
+	if _, ok := route["browserops"]; ok {
+		t.Fatal("route must not contain \"browserops\" key")
+	}
+	if _, ok := route["provider"]; ok {
+		t.Fatal("route must not contain \"provider\" key")
+	}
+}
+
+func TestNormalizeSourceName(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "dashboard", want: "dashboard"},
+		{in: " Dashboard UI ", want: "dashboard-ui"},
+		{in: "mcp/agent", want: "mcp-agent"},
+		{in: "___", want: ""},
+	}
+
+	for _, tt := range tests {
+		if got := normalizeSourceName(tt.in); got != tt.want {
+			t.Fatalf("normalizeSourceName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestStoreRecordConcurrentNoCorruption drives many parallel Record calls (run
+// with -race) to confirm narrowing the lock keeps appends race-free and every
+// event lands intact — no interleaved/corrupted JSONL lines. "server" events
+// exercise both the primary and source-file appends.
+func TestStoreRecordConcurrentNoCorruption(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	const goroutines = 16
+	const perGoroutine = 50
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func(g int) {
+			defer wg.Done()
+			for e := 0; e < perGoroutine; e++ {
+				if err := store.Record(Event{
+					Source:    "server",
+					RequestID: fmt.Sprintf("g%d-e%d", g, e),
+					Method:    "GET",
+					Path:      "/x",
+					Status:    200,
+				}); err != nil {
+					t.Errorf("Record: %v", err)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	got, err := store.Query(Filter{Source: "server", Limit: 1000})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(got) != goroutines*perGoroutine {
+		t.Fatalf("Query returned %d events, want %d (lost or corrupted lines under concurrency)", len(got), goroutines*perGoroutine)
+	}
+
+	seen := make(map[string]int, goroutines*perGoroutine)
+	for _, evt := range got {
+		seen[evt.RequestID]++
+	}
+	for g := 0; g < goroutines; g++ {
+		for e := 0; e < perGoroutine; e++ {
+			key := fmt.Sprintf("g%d-e%d", g, e)
+			if seen[key] != 1 {
+				t.Fatalf("RequestID %s appeared %d times, want 1", key, seen[key])
+			}
+		}
+	}
+}

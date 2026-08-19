@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head><title>Human Type Test</title></head>
+<body>
+  <h1>Human Type Test</h1>
+  <form>
+    <label for="email">Email</label>
+    <input type="text" id="email" name="email" placeholder="Enter email">
+    <label for="name">Name</label>
+    <input type="text" id="name" name="name" placeholder="Enter name">
+  </form>
+  <script>
+    // Track input events to verify human-like typing triggers them
+    document.querySelectorAll('input').forEach(input => {
+      input.addEventListener('input', (e) => {
+        e.target.dataset.inputEvents = (parseInt(e.target.dataset.inputEvents || '0') + 1).toString();
+      });
+    });
+  </script>
+</body>
+</html>

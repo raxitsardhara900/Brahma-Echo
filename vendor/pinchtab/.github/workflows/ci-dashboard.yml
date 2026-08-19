@@ -1,0 +1,30 @@
+name: CI / Dashboard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'dashboard/**'
+      - 'internal/api/types/**'
+      - 'scripts/build-dashboard.sh'
+      - '.github/workflows/ci-dashboard.yml'
+      - '.github/workflows/reusable-dashboard.yml'
+  pull_request:
+    paths:
+      - 'dashboard/**'
+      - 'internal/api/types/**'
+      - 'scripts/build-dashboard.sh'
+      - '.github/workflows/ci-dashboard.yml'
+      - '.github/workflows/reusable-dashboard.yml'
+  workflow_dispatch:
+
+
+permissions:
+  contents: read
+
+jobs:
+  dashboard:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    uses: ./.github/workflows/reusable-dashboard.yml
+    with:
+      ref: ${{ github.sha }}

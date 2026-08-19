@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+#
+# Thin wrapper around `agent-browser` for the benchmark harness.
+#
+# It executes commands inside the benchmark Docker service so the browser,
+# daemon, and session state persist across calls. Every invocation is appended
+# to results/agent_browser_commands.ndjson so record-step.sh can derive per-step
+# tool-call counts automatically.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TOOLS_DIR="${SCRIPT_DIR}/.."
+BENCHMARK_DIR="${SCRIPT_DIR}/../../benchmark"
+RESULTS_DIR="${BENCHMARK_DIR}/results"
+LOG_FILE="${RESULTS_DIR}/agent_browser_commands.ndjson"
+
+# step-end subcommand: bookkeeping shortcut, not an agent-browser call.
+# Injects --type agent-browser and --report-file (read from the current-run
+# pointer) so the agent can drop both flags. Intentionally skips the ndjson
+# log append below — step-end is not a tool call and must not inflate
+# per-step tool-call counts.
+if [[ "${1:-}" == "step-end" ]]; then
+  shift
+  REPORT_PTR="${RESULTS_DIR}/current_agent_browser_report.txt"
+  if [[ ! -s "${REPORT_PTR}" ]]; then
+    echo "ERROR: no current agent-browser report (missing ${REPORT_PTR})" >&2
+    exit 1
+  fi
+  REPORT_FILE="$(cat "${REPORT_PTR}")"
+  exec "${SCRIPT_DIR}/runner" step-end \
+    --type agent-browser \
+    --report-file "${REPORT_FILE}" \
+    "$@"
+fi
+
+: "${AGENT_BROWSER_SERVICE:=agent-browser}"
+: "${AGENT_BROWSER_SESSION:=benchmark}"
+
+mkdir -p "${RESULTS_DIR}"
+
+cd "${TOOLS_DIR}"
+
+seq=1
+if [[ -f "${LOG_FILE}" ]]; then
+  seq=$(( $(wc -l < "${LOG_FILE}") + 1 ))
+fi
+
+set +e
+docker compose exec -T \
+  -e "AGENT_BROWSER_SESSION=${AGENT_BROWSER_SESSION}" \
+  "${AGENT_BROWSER_SERVICE}" \
+  agent-browser "$@"
+rc=$?
+set -e
+
+ARGS_JSON="$(printf '%s\n' "$@" | jq -R . | jq -cs .)"
+
+SEQ="${seq}" jq -nc \
+  --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg session "${AGENT_BROWSER_SESSION}" \
+  --arg service "${AGENT_BROWSER_SERVICE}" \
+  --arg cwd "${TOOLS_DIR}" \
+  --argjson args "${ARGS_JSON}" \
+  --argjson exit_code "${rc}" \
+  '{
+    seq: (env.SEQ | tonumber),
+    timestamp: $ts,
+    session: $session,
+    service: $service,
+    cwd: $cwd,
+    exit_code: $exit_code,
+    args: $args,
+    command: ($args | join(" "))
+  }' >> "${LOG_FILE}"
+
+exit "${rc}"

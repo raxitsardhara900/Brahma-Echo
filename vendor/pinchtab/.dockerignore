@@ -1,0 +1,43 @@
+# Binaries
+pinchtab
+browser-bridge
+
+# Test coverage
+coverage.out
+*.test
+
+# Git
+.git/
+.github/
+
+# Tests (E2E fixtures, scenarios, results)
+tests/
+
+# Local state
+.pinchtab/
+.openclaw/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+*.swp
+
+# Docs (not needed in image), except the library example built into runner-cli
+docs/
+!docs/examples/
+
+# Development
+node_modules/
+dashboard/node_modules/
+*.log
+
+# Build caches
+.gocache/
+.gomodcache/
+tmp/
+
+# Markdown (README, RELEASE, etc.)
+*.md
+!dashboard/**/*.md

@@ -1,0 +1,1509 @@
+package config
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/pinchtab/pinchtab/internal/safelog"
+)
+
+func TestEnvOr(t *testing.T) {
+	key := "PINCHTAB_TEST_ENV"
+	fallback := "default"
+
+	_ = os.Unsetenv(key)
+	if got := envOr(key, fallback); got != fallback {
+		t.Errorf("envOr() = %v, want %v", got, fallback)
+	}
+
+	val := "set"
+	_ = os.Setenv(key, val)
+	defer func() { _ = os.Unsetenv(key) }()
+	if got := envOr(key, fallback); got != val {
+		t.Errorf("envOr() = %v, want %v", got, val)
+	}
+}
+
+func TestLoadConfigDefaults(t *testing.T) {
+	clearConfigEnvVars(t)
+	setCloakBrowserDiscovery(t, "")
+	_ = os.Setenv("PINCHTAB_CONFIG", filepath.Join(t.TempDir(), "nonexistent.json"))
+	defer func() { _ = os.Unsetenv("PINCHTAB_CONFIG") }()
+
+	cfg := Load()
+	if cfg.Port != "9867" {
+		t.Errorf("default Port = %v, want 9867", cfg.Port)
+	}
+	if cfg.Bind != "127.0.0.1" {
+		t.Errorf("default Bind = %v, want 127.0.0.1", cfg.Bind)
+	}
+	if cfg.AllowEvaluate {
+		t.Errorf("default AllowEvaluate = %v, want false", cfg.AllowEvaluate)
+	}
+	if cfg.AllowCookies {
+		t.Errorf("default AllowCookies = %v, want false", cfg.AllowCookies)
+	}
+	if !cfg.EnableActionGuards {
+		t.Errorf("default EnableActionGuards = %v, want true", cfg.EnableActionGuards)
+	}
+	if cfg.TrustProxyHeaders {
+		t.Errorf("default TrustProxyHeaders = %v, want false", cfg.TrustProxyHeaders)
+	}
+	if cfg.CookieSecure != nil {
+		t.Errorf("default CookieSecure = %v, want nil for auto-detect", *cfg.CookieSecure)
+	}
+	if cfg.DefaultBrowser != BrowserChrome {
+		t.Errorf("default DefaultBrowser = %v, want %s", cfg.DefaultBrowser, BrowserChrome)
+	}
+	if !cfg.Cloak.DisableDefaultStealthArgs {
+		t.Errorf("default Cloak.DisableDefaultStealthArgs = false, want true")
+	}
+	wantExtensionsDir := defaultExtensionsDir(userConfigDir())
+	if len(cfg.ExtensionPaths) != 1 || cfg.ExtensionPaths[0] != wantExtensionsDir {
+		t.Errorf("default ExtensionPaths = %v, want [%q]", cfg.ExtensionPaths, wantExtensionsDir)
+	}
+	if len(cfg.DownloadAllowedDomains) != 0 {
+		t.Errorf("default DownloadAllowedDomains = %v, want empty list", cfg.DownloadAllowedDomains)
+	}
+	if cfg.DownloadMaxBytes != DefaultDownloadMaxBytes {
+		t.Errorf("default DownloadMaxBytes = %d, want %d", cfg.DownloadMaxBytes, DefaultDownloadMaxBytes)
+	}
+	if cfg.UploadMaxRequestBytes != DefaultUploadMaxRequestBytes {
+		t.Errorf("default UploadMaxRequestBytes = %d, want %d", cfg.UploadMaxRequestBytes, DefaultUploadMaxRequestBytes)
+	}
+	if cfg.UploadMaxFiles != DefaultUploadMaxFiles {
+		t.Errorf("default UploadMaxFiles = %d, want %d", cfg.UploadMaxFiles, DefaultUploadMaxFiles)
+	}
+	if cfg.UploadMaxFileBytes != DefaultUploadMaxFileBytes {
+		t.Errorf("default UploadMaxFileBytes = %d, want %d", cfg.UploadMaxFileBytes, DefaultUploadMaxFileBytes)
+	}
+	if cfg.UploadMaxTotalBytes != DefaultUploadMaxTotalBytes {
+		t.Errorf("default UploadMaxTotalBytes = %d, want %d", cfg.UploadMaxTotalBytes, DefaultUploadMaxTotalBytes)
+	}
+	if cfg.Strategy != "always-on" {
+		t.Errorf("default Strategy = %v, want always-on", cfg.Strategy)
+	}
+	if cfg.AllocationPolicy != "fcfs" {
+		t.Errorf("default AllocationPolicy = %v, want fcfs", cfg.AllocationPolicy)
+	}
+	if cfg.TabEvictionPolicy != "close_lru" {
+		t.Errorf("default TabEvictionPolicy = %v, want close_lru", cfg.TabEvictionPolicy)
+	}
+	if cfg.AttachEnabled {
+		t.Errorf("default AttachEnabled = %v, want false", cfg.AttachEnabled)
+	}
+	if cfg.AttachForwardProxyAuth {
+		t.Errorf("default AttachForwardProxyAuth = %v, want false", cfg.AttachForwardProxyAuth)
+	}
+	wantAttachSchemes := []string{"ws", "wss", "http", "https"}
+	if strings.Join(cfg.AttachAllowSchemes, ",") != strings.Join(wantAttachSchemes, ",") {
+		t.Errorf("default AttachAllowSchemes = %v, want %v", cfg.AttachAllowSchemes, wantAttachSchemes)
+	}
+	if !cfg.IDPI.Enabled {
+		t.Errorf("default IDPI.Enabled = %v, want true", cfg.IDPI.Enabled)
+	}
+	if len(cfg.AllowedDomains) != 3 || cfg.AllowedDomains[0] != "127.0.0.1" {
+		t.Errorf("default AllowedDomains = %v, want local-only allowlist", cfg.AllowedDomains)
+	}
+	if !cfg.IDPI.StrictMode {
+		t.Errorf("default IDPI.StrictMode = %v, want true", cfg.IDPI.StrictMode)
+	}
+	if !cfg.IDPI.ScanContent {
+		t.Errorf("default IDPI.ScanContent = %v, want true", cfg.IDPI.ScanContent)
+	}
+	if !cfg.IDPI.WrapContent {
+		t.Errorf("default IDPI.WrapContent = %v, want true", cfg.IDPI.WrapContent)
+	}
+	if !cfg.Observability.Activity.Enabled {
+		t.Errorf("default Observability.Activity.Enabled = %v, want true", cfg.Observability.Activity.Enabled)
+	}
+	if cfg.Observability.Activity.RetentionDays != 30 {
+		t.Errorf("default Observability.Activity.RetentionDays = %d, want 30", cfg.Observability.Activity.RetentionDays)
+	}
+	if cfg.Observability.Activity.Events.Dashboard {
+		t.Errorf("default Observability.Activity.Events.Dashboard = %v, want false", cfg.Observability.Activity.Events.Dashboard)
+	}
+	if cfg.Observability.Activity.Events.Server {
+		t.Errorf("default Observability.Activity.Events.Server = %v, want false", cfg.Observability.Activity.Events.Server)
+	}
+	if cfg.Observability.Activity.Events.Bridge {
+		t.Errorf("default Observability.Activity.Events.Bridge = %v, want false", cfg.Observability.Activity.Events.Bridge)
+	}
+	if cfg.Observability.Activity.Events.Orchestrator {
+		t.Errorf("default Observability.Activity.Events.Orchestrator = %v, want false", cfg.Observability.Activity.Events.Orchestrator)
+	}
+	if cfg.Observability.Activity.Events.Scheduler {
+		t.Errorf("default Observability.Activity.Events.Scheduler = %v, want false", cfg.Observability.Activity.Events.Scheduler)
+	}
+	if cfg.Observability.Activity.Events.MCP {
+		t.Errorf("default Observability.Activity.Events.MCP = %v, want false", cfg.Observability.Activity.Events.MCP)
+	}
+	if cfg.Observability.Activity.Events.Other {
+		t.Errorf("default Observability.Activity.Events.Other = %v, want false", cfg.Observability.Activity.Events.Other)
+	}
+	if !cfg.Sessions.Dashboard.Persist {
+		t.Errorf("default Sessions.Dashboard.Persist = %v, want true", cfg.Sessions.Dashboard.Persist)
+	}
+	if cfg.Sessions.Dashboard.IdleTimeout != 7*24*time.Hour {
+		t.Errorf("default Sessions.Dashboard.IdleTimeout = %v, want %v", cfg.Sessions.Dashboard.IdleTimeout, 7*24*time.Hour)
+	}
+	if cfg.Sessions.Dashboard.MaxLifetime != 7*24*time.Hour {
+		t.Errorf("default Sessions.Dashboard.MaxLifetime = %v, want %v", cfg.Sessions.Dashboard.MaxLifetime, 7*24*time.Hour)
+	}
+	if cfg.Sessions.Dashboard.RequireElevation {
+		t.Errorf("default Sessions.Dashboard.RequireElevation = %v, want false", cfg.Sessions.Dashboard.RequireElevation)
+	}
+	if cfg.AutoSolver.AutoTrigger != true {
+		t.Errorf("default AutoSolver.AutoTrigger = %v, want true", cfg.AutoSolver.AutoTrigger)
+	}
+	if cfg.AutoSolver.TriggerOnNavigate != true {
+		t.Errorf("default AutoSolver.TriggerOnNavigate = %v, want true", cfg.AutoSolver.TriggerOnNavigate)
+	}
+	if cfg.AutoSolver.TriggerOnAction != true {
+		t.Errorf("default AutoSolver.TriggerOnAction = %v, want true", cfg.AutoSolver.TriggerOnAction)
+	}
+	if cfg.AutoSolver.SolverTimeoutSec != 30 {
+		t.Errorf("default AutoSolver.SolverTimeoutSec = %d, want 30", cfg.AutoSolver.SolverTimeoutSec)
+	}
+	if cfg.AutoSolver.RetryBaseDelayMs != 500 {
+		t.Errorf("default AutoSolver.RetryBaseDelayMs = %d, want 500", cfg.AutoSolver.RetryBaseDelayMs)
+	}
+	if cfg.AutoSolver.RetryMaxDelayMs != 10000 {
+		t.Errorf("default AutoSolver.RetryMaxDelayMs = %d, want 10000", cfg.AutoSolver.RetryMaxDelayMs)
+	}
+}
+
+func TestLoadConfigDefaultsPreferInstalledCloakBrowser(t *testing.T) {
+	clearConfigEnvVars(t)
+	setCloakBrowserDiscovery(t, "/opt/cloakbrowser/chrome")
+	t.Setenv("PINCHTAB_CONFIG", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+	cfg, _, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.DefaultBrowser != BrowserCloak {
+		t.Errorf("default DefaultBrowser = %q, want %q when CloakBrowser is installed", cfg.DefaultBrowser, BrowserCloak)
+	}
+}
+
+// TestLoadConfigDefaultSolvers asserts the default autosolver backend list
+// advertises only the implemented backends (cloudflare + semantic) and does
+// NOT include the skeleton-only capsolver/twocaptcha external backends.
+func TestLoadConfigDefaultSolvers(t *testing.T) {
+	clearConfigEnvVars(t)
+	_ = os.Setenv("PINCHTAB_CONFIG", filepath.Join(t.TempDir(), "nonexistent.json"))
+	defer func() { _ = os.Unsetenv("PINCHTAB_CONFIG") }()
+
+	cfg := Load()
+
+	has := func(name string) bool {
+		for _, s := range cfg.AutoSolver.Solvers {
+			if s == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, want := range []string{"cloudflare", "semantic"} {
+		if !has(want) {
+			t.Errorf("default AutoSolver.Solvers = %v, want it to contain %q", cfg.AutoSolver.Solvers, want)
+		}
+	}
+	for _, unwanted := range []string{"capsolver", "twocaptcha"} {
+		if has(unwanted) {
+			t.Errorf("default AutoSolver.Solvers = %v, must NOT contain skeleton backend %q", cfg.AutoSolver.Solvers, unwanted)
+		}
+	}
+}
+
+func TestLoadConfigTokenEnvOverride(t *testing.T) {
+	clearConfigEnvVars(t)
+	_ = os.Setenv("PINCHTAB_CONFIG", filepath.Join(t.TempDir(), "nonexistent.json"))
+	_ = os.Setenv("PINCHTAB_TOKEN", "secret")
+	defer func() {
+		_ = os.Unsetenv("PINCHTAB_CONFIG")
+		_ = os.Unsetenv("PINCHTAB_TOKEN")
+	}()
+
+	cfg := Load()
+	if cfg.Port != "9867" {
+		t.Errorf("default Port = %v, want 9867", cfg.Port)
+	}
+	if cfg.Bind != "127.0.0.1" {
+		t.Errorf("default Bind = %v, want 127.0.0.1", cfg.Bind)
+	}
+	if cfg.Token != "secret" {
+		t.Errorf("env Token = %v, want secret", cfg.Token)
+	}
+}
+
+func TestConfigFilePortOverridesDefault(t *testing.T) {
+	clearConfigEnvVars(t)
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.json")
+	_ = os.Setenv("PINCHTAB_CONFIG", configPath)
+	defer func() {
+		_ = os.Unsetenv("PINCHTAB_CONFIG")
+	}()
+
+	if err := os.WriteFile(configPath, []byte(`{"server":{"port":"8888"}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Load()
+	if cfg.Port != "8888" {
+		t.Errorf("config file Port = %v, want 8888", cfg.Port)
+	}
+}
+
+func TestConfigFileWithNestedValues(t *testing.T) {
+	clearConfigEnvVars(t)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.json")
+	_ = os.Setenv("PINCHTAB_CONFIG", configPath)
+	defer func() {
+		_ = os.Unsetenv("PINCHTAB_CONFIG")
+	}()
+
+	nestedConfig := `{
+		"server": {
+			"port": "8888"
+		},
+		"instanceDefaults": {
+			"maxParallelTabs": 4
+		},
+		"multiInstance": {
+			"strategy": "explicit"
+		}
+	}`
+	if err := os.WriteFile(configPath, []byte(nestedConfig), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Load()
+
+	if cfg.Port != "8888" {
+		t.Errorf("config file Port = %v, want 8888", cfg.Port)
+	}
+	if cfg.MaxParallelTabs != 4 {
+		t.Errorf("config file MaxParallelTabs = %v, want 4", cfg.MaxParallelTabs)
+	}
+	if cfg.Strategy != "explicit" {
+		t.Errorf("config file Strategy = %v, want explicit", cfg.Strategy)
+	}
+}
+
+func TestLoadConfigActivityEvents(t *testing.T) {
+	clearConfigEnvVars(t)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.json")
+	_ = os.Setenv("PINCHTAB_CONFIG", configPath)
+	defer func() {
+		_ = os.Unsetenv("PINCHTAB_CONFIG")
+	}()
+
+	if err := os.WriteFile(configPath, []byte(`{
+		"observability": {
+			"activity": {
+				"events": {
+					"dashboard": true,
+					"server": true,
+					"bridge": false,
+					"orchestrator": true,
+					"scheduler": true,
+					"mcp": false,
+					"other": true
+				}
+			}
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Load()
+	if !cfg.Observability.Activity.Events.Dashboard {
+		t.Error("dashboard events should load as enabled")
+	}
+	if !cfg.Observability.Activity.Events.Server {
+		t.Error("server events should load as enabled")
+	}
+	if cfg.Observability.Activity.Events.Bridge {
+		t.Error("bridge events should load as disabled")
+	}
+	if !cfg.Observability.Activity.Events.Orchestrator {
+		t.Error("orchestrator events should load as enabled")
+	}
+	if !cfg.Observability.Activity.Events.Scheduler {
+		t.Error("scheduler events should load as enabled")
+	}
+	if cfg.Observability.Activity.Events.MCP {
+		t.Error("mcp events should load as disabled")
+	}
+	if !cfg.Observability.Activity.Events.Other {
+		t.Error("other events should load as enabled")
+	}
+}
+
+func TestLoadConfigActivityStateDirIgnoresConfigOverride(t *testing.T) {
+	clearConfigEnvVars(t)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.json")
+	sharedActivityDir := filepath.Join(tmpDir, "shared-activity")
+	_ = os.Setenv("PINCHTAB_CONFIG", configPath)
+	defer func() { _ = os.Unsetenv("PINCHTAB_CONFIG") }()
+
+	cfgDoc, err := json.Marshal(map[string]any{
+		"server": map[string]any{
+			"stateDir": "/tmp/profile-state",
+		},
+		"observability": map[string]any{
+			"activity": map[string]any{
+				"stateDir": sharedActivityDir,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(configPath, cfgDoc, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Load()
+	if cfg.Observability.Activity.StateDir != "" {
+		t.Fatalf("Observability.Activity.StateDir = %q, want empty", cfg.Observability.Activity.StateDir)
+	}
+	if cfg.ActivityStateDir() != "/tmp/profile-state" {
+		t.Fatalf("ActivityStateDir() = %q, want %q", cfg.ActivityStateDir(), "/tmp/profile-state")
+	}
+}
+
+func TestRuntimeConfigActivityStateDirFallsBackToStateDir(t *testing.T) {
+	cfg := &RuntimeConfig{StateDir: "/tmp/pinchtab-state"}
+
+	if got := cfg.ActivityStateDir(); got != "/tmp/pinchtab-state" {
+		t.Fatalf("ActivityStateDir() = %q, want %q", got, "/tmp/pinchtab-state")
+	}
+}
+
+// When the file omits security.attach.allowHosts/allowSchemes, the seeded
+// runtime defaults must survive (not be clobbered with an empty list). A file
+// that sets them still overrides.
+func TestApplyFileConfigToRuntime_OmittedAttachListsKeepDefaults(t *testing.T) {
+	cfg := &RuntimeConfig{
+		AttachAllowHosts:   []string{"127.0.0.1", "localhost", "::1"},
+		AttachAllowSchemes: []string{"ws", "wss", "http", "https"},
+	}
+	fc := FileConfig{}
+	ApplyFileConfigToRuntime(cfg, &fc)
+
+	if strings.Join(cfg.AttachAllowSchemes, ",") != "ws,wss,http,https" {
+		t.Errorf("omitted attach.allowSchemes should keep defaults, got %v", cfg.AttachAllowSchemes)
+	}
+	if strings.Join(cfg.AttachAllowHosts, ",") != "127.0.0.1,localhost,::1" {
+		t.Errorf("omitted attach.allowHosts should keep defaults, got %v", cfg.AttachAllowHosts)
+	}
+
+	cfg2 := &RuntimeConfig{AttachAllowSchemes: []string{"ws", "wss", "http", "https"}}
+	fc2 := FileConfig{}
+	fc2.Security.Attach.AllowSchemes = []string{"https"}
+	ApplyFileConfigToRuntime(cfg2, &fc2)
+	if strings.Join(cfg2.AttachAllowSchemes, ",") != "https" {
+		t.Errorf("file attach.allowSchemes should override default, got %v", cfg2.AttachAllowSchemes)
+	}
+}
+
+func TestApplyFileConfigToRuntimeResetsSecurityFlagsToSafeDefaults(t *testing.T) {
+	cfg := &RuntimeConfig{
+		AllowEvaluate:   true,
+		AllowMacro:      true,
+		AllowScreencast: true,
+		AllowDownload:   true,
+		AllowCookies:    true,
+		AllowUpload:     true,
+		IDPI: IDPIConfig{
+			Enabled: false,
+		},
+	}
+
+	fc := DefaultFileConfig()
+	ApplyFileConfigToRuntime(cfg, &fc)
+
+	if cfg.AllowEvaluate {
+		t.Errorf("ApplyFileConfigToRuntime AllowEvaluate = %v, want false", cfg.AllowEvaluate)
+	}
+	if cfg.AllowMacro {
+		t.Errorf("ApplyFileConfigToRuntime AllowMacro = %v, want false", cfg.AllowMacro)
+	}
+	if cfg.AllowScreencast {
+		t.Errorf("ApplyFileConfigToRuntime AllowScreencast = %v, want false", cfg.AllowScreencast)
+	}
+	if cfg.AllowDownload {
+		t.Errorf("ApplyFileConfigToRuntime AllowDownload = %v, want false", cfg.AllowDownload)
+	}
+	if cfg.AllowCookies {
+		t.Errorf("ApplyFileConfigToRuntime AllowCookies = %v, want false", cfg.AllowCookies)
+	}
+	if cfg.AllowUpload {
+		t.Errorf("ApplyFileConfigToRuntime AllowUpload = %v, want false", cfg.AllowUpload)
+	}
+	if !cfg.EnableActionGuards {
+		t.Errorf("ApplyFileConfigToRuntime EnableActionGuards = %v, want true", cfg.EnableActionGuards)
+	}
+	if len(cfg.DownloadAllowedDomains) != 0 {
+		t.Errorf("ApplyFileConfigToRuntime DownloadAllowedDomains = %v, want empty list", cfg.DownloadAllowedDomains)
+	}
+	if cfg.DownloadMaxBytes != DefaultDownloadMaxBytes {
+		t.Errorf("ApplyFileConfigToRuntime DownloadMaxBytes = %d, want %d", cfg.DownloadMaxBytes, DefaultDownloadMaxBytes)
+	}
+	if cfg.UploadMaxRequestBytes != DefaultUploadMaxRequestBytes {
+		t.Errorf("ApplyFileConfigToRuntime UploadMaxRequestBytes = %d, want %d", cfg.UploadMaxRequestBytes, DefaultUploadMaxRequestBytes)
+	}
+	if cfg.UploadMaxFiles != DefaultUploadMaxFiles {
+		t.Errorf("ApplyFileConfigToRuntime UploadMaxFiles = %d, want %d", cfg.UploadMaxFiles, DefaultUploadMaxFiles)
+	}
+	if cfg.UploadMaxFileBytes != DefaultUploadMaxFileBytes {
+		t.Errorf("ApplyFileConfigToRuntime UploadMaxFileBytes = %d, want %d", cfg.UploadMaxFileBytes, DefaultUploadMaxFileBytes)
+	}
+	if cfg.UploadMaxTotalBytes != DefaultUploadMaxTotalBytes {
+		t.Errorf("ApplyFileConfigToRuntime UploadMaxTotalBytes = %d, want %d", cfg.UploadMaxTotalBytes, DefaultUploadMaxTotalBytes)
+	}
+	if cfg.AttachEnabled {
+		t.Errorf("ApplyFileConfigToRuntime AttachEnabled = %v, want false", cfg.AttachEnabled)
+	}
+	if cfg.AttachForwardProxyAuth {
+		t.Errorf("ApplyFileConfigToRuntime AttachForwardProxyAuth = %v, want false", cfg.AttachForwardProxyAuth)
+	}
+	if !cfg.IDPI.Enabled {
+		t.Errorf("ApplyFileConfigToRuntime IDPI.Enabled = %v, want true", cfg.IDPI.Enabled)
+	}
+	if len(cfg.AllowedDomains) != 3 || cfg.AllowedDomains[0] != "127.0.0.1" {
+		t.Errorf("ApplyFileConfigToRuntime AllowedDomains = %v, want local-only allowlist", cfg.AllowedDomains)
+	}
+	if !cfg.IDPI.StrictMode || !cfg.IDPI.ScanContent || !cfg.IDPI.WrapContent {
+		t.Errorf("ApplyFileConfigToRuntime IDPI = %+v, want strict+scan+wrap enabled", cfg.IDPI)
+	}
+}
+
+func TestLoadPreservesIDPIShieldThreshold(t *testing.T) {
+	clearConfigEnvVars(t)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.json")
+	_ = os.Setenv("PINCHTAB_CONFIG", configPath)
+	defer func() { _ = os.Unsetenv("PINCHTAB_CONFIG") }()
+
+	if err := os.WriteFile(configPath, []byte(`{
+		"security": {
+			"idpi": {
+				"enabled": true,
+				"strictMode": true,
+				"scanContent": true,
+				"wrapContent": true,
+				"allowedDomains": ["fixtures"],
+				"shieldThreshold": 30
+			}
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Load()
+	if cfg.IDPI.ShieldThreshold != 30 {
+		t.Fatalf("IDPI.ShieldThreshold = %d, want 30", cfg.IDPI.ShieldThreshold)
+	}
+}
+
+func TestApplyFileConfigToRuntimeClearsTokenWhenFileTokenRemoved(t *testing.T) {
+	clearConfigEnvVars(t)
+
+	cfg := &RuntimeConfig{Token: "secret-token"}
+	fc := DefaultFileConfig()
+	fc.Server.Token = ""
+
+	ApplyFileConfigToRuntime(cfg, &fc)
+
+	if cfg.Token != "" {
+		t.Fatalf("ApplyFileConfigToRuntime Token = %q, want empty string", cfg.Token)
+	}
+}
+
+func TestApplyFileConfigToRuntime_ClampsNetworkBufferSize(t *testing.T) {
+	cfg := &RuntimeConfig{}
+	oversized := MaxNetworkBufferSize + 1
+	fc := &FileConfig{
+		Server: ServerConfig{NetworkBufferSize: &oversized},
+	}
+
+	ApplyFileConfigToRuntime(cfg, fc)
+
+	if cfg.NetworkBufferSize != MaxNetworkBufferSize {
+		t.Errorf("ApplyFileConfigToRuntime NetworkBufferSize = %d, want %d", cfg.NetworkBufferSize, MaxNetworkBufferSize)
+	}
+}
+
+func TestApplyFileConfigToRuntime_CopiesDownloadAllowedDomains(t *testing.T) {
+	cfg := &RuntimeConfig{}
+	fc := &FileConfig{
+		Security: SecurityConfig{
+			DownloadAllowedDomains: []string{"pinchtab.com", "*.pinchtab.com"},
+		},
+	}
+
+	ApplyFileConfigToRuntime(cfg, fc)
+	fc.Security.DownloadAllowedDomains[0] = "mutated.example.com"
+
+	if len(cfg.DownloadAllowedDomains) != 2 {
+		t.Fatalf("ApplyFileConfigToRuntime DownloadAllowedDomains = %v, want 2 entries", cfg.DownloadAllowedDomains)
+	}
+	if cfg.DownloadAllowedDomains[0] != "pinchtab.com" {
+		t.Fatalf("ApplyFileConfigToRuntime copied list = %v, want original values", cfg.DownloadAllowedDomains)
+	}
+}
+
+func TestApplyFileConfigToRuntime_AllowsExplicitEmptyExtensionPaths(t *testing.T) {
+	cfg := &RuntimeConfig{
+		StateDir:       userConfigDir(),
+		ExtensionPaths: []string{defaultExtensionsDir(userConfigDir())},
+	}
+	fc := &FileConfig{
+		Browser: BrowserConfig{
+			ExtensionPaths: []string{},
+		},
+	}
+
+	ApplyFileConfigToRuntime(cfg, fc)
+
+	if len(cfg.ExtensionPaths) != 0 {
+		t.Fatalf("ApplyFileConfigToRuntime ExtensionPaths = %v, want explicit empty list", cfg.ExtensionPaths)
+	}
+}
+
+func TestApplyFileConfigToRuntime_CopiesAttachConfig(t *testing.T) {
+	cfg := &RuntimeConfig{}
+	enabled := true
+	fc := &FileConfig{
+		Security: SecurityConfig{
+			Attach: AttachConfig{
+				Enabled:          &enabled,
+				AllowHosts:       []string{"127.0.0.1", "pinchtab-bridge"},
+				AllowSchemes:     []string{"http", "https"},
+				ForwardProxyAuth: &enabled,
+			},
+		},
+	}
+
+	ApplyFileConfigToRuntime(cfg, fc)
+	fc.Security.Attach.AllowHosts[0] = "mutated.example.com"
+	fc.Security.Attach.AllowSchemes[0] = "ws"
+
+	if !cfg.AttachEnabled {
+		t.Fatalf("ApplyFileConfigToRuntime AttachEnabled = %v, want true", cfg.AttachEnabled)
+	}
+	if len(cfg.AttachAllowHosts) != 2 || cfg.AttachAllowHosts[1] != "pinchtab-bridge" {
+		t.Fatalf("ApplyFileConfigToRuntime AttachAllowHosts = %v, want copied hosts", cfg.AttachAllowHosts)
+	}
+	if len(cfg.AttachAllowSchemes) != 2 || cfg.AttachAllowSchemes[0] != "http" {
+		t.Fatalf("ApplyFileConfigToRuntime AttachAllowSchemes = %v, want copied schemes", cfg.AttachAllowSchemes)
+	}
+	if !cfg.AttachForwardProxyAuth {
+		t.Fatalf("ApplyFileConfigToRuntime AttachForwardProxyAuth = %v, want true", cfg.AttachForwardProxyAuth)
+	}
+}
+
+func TestRuntimeConfig_EffectiveTransferLimitsFallbackAndClamp(t *testing.T) {
+	cfg := &RuntimeConfig{}
+	if cfg.EffectiveDownloadMaxBytes() != DefaultDownloadMaxBytes {
+		t.Fatalf("EffectiveDownloadMaxBytes() = %d, want %d", cfg.EffectiveDownloadMaxBytes(), DefaultDownloadMaxBytes)
+	}
+	if cfg.EffectiveUploadMaxRequestBytes() != DefaultUploadMaxRequestBytes {
+		t.Fatalf("EffectiveUploadMaxRequestBytes() = %d, want %d", cfg.EffectiveUploadMaxRequestBytes(), DefaultUploadMaxRequestBytes)
+	}
+	if cfg.EffectiveUploadMaxFiles() != DefaultUploadMaxFiles {
+		t.Fatalf("EffectiveUploadMaxFiles() = %d, want %d", cfg.EffectiveUploadMaxFiles(), DefaultUploadMaxFiles)
+	}
+	if cfg.EffectiveUploadMaxFileBytes() != DefaultUploadMaxFileBytes {
+		t.Fatalf("EffectiveUploadMaxFileBytes() = %d, want %d", cfg.EffectiveUploadMaxFileBytes(), DefaultUploadMaxFileBytes)
+	}
+	if cfg.EffectiveUploadMaxTotalBytes() != DefaultUploadMaxTotalBytes {
+		t.Fatalf("EffectiveUploadMaxTotalBytes() = %d, want %d", cfg.EffectiveUploadMaxTotalBytes(), DefaultUploadMaxTotalBytes)
+	}
+
+	cfg.DownloadMaxBytes = MaxDownloadMaxBytes + 1
+	cfg.UploadMaxRequestBytes = MaxUploadMaxRequestBytes + 1
+	cfg.UploadMaxFiles = MaxUploadMaxFiles + 1
+	cfg.UploadMaxFileBytes = MaxUploadMaxFileBytes + 1
+	cfg.UploadMaxTotalBytes = MaxUploadMaxTotalBytes + 1
+
+	if cfg.EffectiveDownloadMaxBytes() != MaxDownloadMaxBytes {
+		t.Fatalf("EffectiveDownloadMaxBytes clamp = %d, want %d", cfg.EffectiveDownloadMaxBytes(), MaxDownloadMaxBytes)
+	}
+	if cfg.EffectiveUploadMaxRequestBytes() != MaxUploadMaxRequestBytes {
+		t.Fatalf("EffectiveUploadMaxRequestBytes clamp = %d, want %d", cfg.EffectiveUploadMaxRequestBytes(), MaxUploadMaxRequestBytes)
+	}
+	if cfg.EffectiveUploadMaxFiles() != MaxUploadMaxFiles {
+		t.Fatalf("EffectiveUploadMaxFiles clamp = %d, want %d", cfg.EffectiveUploadMaxFiles(), MaxUploadMaxFiles)
+	}
+	if cfg.EffectiveUploadMaxFileBytes() != MaxUploadMaxFileBytes {
+		t.Fatalf("EffectiveUploadMaxFileBytes clamp = %d, want %d", cfg.EffectiveUploadMaxFileBytes(), MaxUploadMaxFileBytes)
+	}
+	if cfg.EffectiveUploadMaxTotalBytes() != MaxUploadMaxTotalBytes {
+		t.Fatalf("EffectiveUploadMaxTotalBytes clamp = %d, want %d", cfg.EffectiveUploadMaxTotalBytes(), MaxUploadMaxTotalBytes)
+	}
+}
+
+func TestApplyFileConfigToRuntime_ClampsTransferLimits(t *testing.T) {
+	cfg := &RuntimeConfig{}
+	downloadTooLarge := MaxDownloadMaxBytes + 1
+	requestTooLarge := MaxUploadMaxRequestBytes + 1
+	filesTooLarge := MaxUploadMaxFiles + 1
+	fileTooLarge := MaxUploadMaxFileBytes + 1
+	totalTooLarge := MaxUploadMaxTotalBytes + 1
+	fc := &FileConfig{
+		Security: SecurityConfig{
+			DownloadMaxBytes:      &downloadTooLarge,
+			UploadMaxRequestBytes: &requestTooLarge,
+			UploadMaxFiles:        &filesTooLarge,
+			UploadMaxFileBytes:    &fileTooLarge,
+			UploadMaxTotalBytes:   &totalTooLarge,
+		},
+	}
+
+	ApplyFileConfigToRuntime(cfg, fc)
+
+	if cfg.DownloadMaxBytes != MaxDownloadMaxBytes {
+		t.Fatalf("DownloadMaxBytes = %d, want %d", cfg.DownloadMaxBytes, MaxDownloadMaxBytes)
+	}
+	if cfg.UploadMaxRequestBytes != MaxUploadMaxRequestBytes {
+		t.Fatalf("UploadMaxRequestBytes = %d, want %d", cfg.UploadMaxRequestBytes, MaxUploadMaxRequestBytes)
+	}
+	if cfg.UploadMaxFiles != MaxUploadMaxFiles {
+		t.Fatalf("UploadMaxFiles = %d, want %d", cfg.UploadMaxFiles, MaxUploadMaxFiles)
+	}
+	if cfg.UploadMaxFileBytes != MaxUploadMaxFileBytes {
+		t.Fatalf("UploadMaxFileBytes = %d, want %d", cfg.UploadMaxFileBytes, MaxUploadMaxFileBytes)
+	}
+	if cfg.UploadMaxTotalBytes != MaxUploadMaxTotalBytes {
+		t.Fatalf("UploadMaxTotalBytes = %d, want %d", cfg.UploadMaxTotalBytes, MaxUploadMaxTotalBytes)
+	}
+}
+
+func TestApplyFileConfigToRuntime_TrustProxyHeaders(t *testing.T) {
+	cfg := &RuntimeConfig{}
+	if cfg.TrustProxyHeaders {
+		t.Fatal("expected default TrustProxyHeaders to be false")
+	}
+
+	enabled := true
+	fc := &FileConfig{Server: ServerConfig{TrustProxyHeaders: &enabled}}
+	applyFileConfig(cfg, fc)
+	if !cfg.TrustProxyHeaders {
+		t.Fatal("expected TrustProxyHeaders to be true after apply")
+	}
+
+	disabled := false
+	fc2 := &FileConfig{Server: ServerConfig{TrustProxyHeaders: &disabled}}
+	applyFileConfig(cfg, fc2)
+	if cfg.TrustProxyHeaders {
+		t.Fatal("expected TrustProxyHeaders to be false after apply with false")
+	}
+}
+
+func TestApplyFileConfigToRuntime_CookieSecure(t *testing.T) {
+	cfg := &RuntimeConfig{}
+	if cfg.CookieSecure != nil {
+		t.Fatal("expected default CookieSecure to be nil")
+	}
+
+	enabled := true
+	fc := &FileConfig{Server: ServerConfig{CookieSecure: &enabled}}
+	applyFileConfig(cfg, fc)
+	if cfg.CookieSecure == nil || !*cfg.CookieSecure {
+		t.Fatal("expected CookieSecure to be true after apply")
+	}
+
+	disabled := false
+	fc2 := &FileConfig{Server: ServerConfig{CookieSecure: &disabled}}
+	applyFileConfig(cfg, fc2)
+	if cfg.CookieSecure == nil || *cfg.CookieSecure {
+		t.Fatal("expected CookieSecure to be false after apply with false")
+	}
+
+	fc3 := &FileConfig{}
+	applyFileConfig(cfg, fc3)
+	if cfg.CookieSecure != nil {
+		t.Fatal("expected CookieSecure to reset to nil when omitted")
+	}
+}
+
+func TestApplyFileConfigToRuntime_SanitizesBrowserExtraFlags(t *testing.T) {
+	cfg := &RuntimeConfig{}
+	fc := &FileConfig{
+		Browser: BrowserConfig{
+			BrowserExtraFlags: "--disable-gpu --user-agent=Bad/1.0 --disable-web-security --ash-no-nudges",
+		},
+	}
+
+	ApplyFileConfigToRuntime(cfg, fc)
+
+	if cfg.BrowserExtraFlags != "--disable-gpu --ash-no-nudges" {
+		t.Fatalf("BrowserExtraFlags = %q, want %q", cfg.BrowserExtraFlags, "--disable-gpu --ash-no-nudges")
+	}
+}
+
+func TestApplyFileConfigToRuntime_CloakBrowserSettings(t *testing.T) {
+	quota := 2048
+	disableDefaultStealthArgs := false
+	cfg := &RuntimeConfig{Cloak: CloakBrowserRuntimeConfig{DisableDefaultStealthArgs: true}}
+	fc := &FileConfig{
+		Browsers: BrowsersConfig{Default: BrowserCloak},
+		Browser: BrowserConfig{
+			BrowserBinary: "/opt/cloakbrowser/chrome",
+			Cloak: CloakBrowserConfig{
+				FingerprintSeed:           "42069",
+				Platform:                  "windows",
+				Locale:                    "en-GB",
+				Timezone:                  "Europe/London",
+				WebRTCIP:                  "auto",
+				FontsDir:                  "/opt/fonts",
+				StorageQuotaMB:            &quota,
+				DisableDefaultStealthArgs: &disableDefaultStealthArgs,
+			},
+		},
+	}
+
+	ApplyFileConfigToRuntime(cfg, fc)
+
+	if cfg.DefaultBrowser != BrowserCloak {
+		t.Fatalf("DefaultBrowser = %q, want %q", cfg.DefaultBrowser, BrowserCloak)
+	}
+	if cfg.BrowserBinary != "/opt/cloakbrowser/chrome" {
+		t.Fatalf("BrowserBinary = %q, want configured binary", cfg.BrowserBinary)
+	}
+	if cfg.Cloak.FingerprintSeed != "42069" ||
+		cfg.Cloak.Platform != "windows" ||
+		cfg.Cloak.Locale != "en-GB" ||
+		cfg.Cloak.Timezone != "Europe/London" ||
+		cfg.Cloak.WebRTCIP != "auto" ||
+		cfg.Cloak.FontsDir != "/opt/fonts" ||
+		cfg.Cloak.StorageQuotaMB != quota ||
+		cfg.Cloak.DisableDefaultStealthArgs {
+		t.Fatalf("Cloak settings not applied: %+v", cfg.Cloak)
+	}
+
+	defaultCfg := &RuntimeConfig{}
+	ApplyFileConfigToRuntime(defaultCfg, &FileConfig{
+		Browsers: BrowsersConfig{Default: BrowserCloak},
+		Browser: BrowserConfig{
+			BrowserBinary: "/opt/cloakbrowser/chrome",
+		},
+	})
+	if !defaultCfg.Cloak.DisableDefaultStealthArgs {
+		t.Fatal("Cloak.DisableDefaultStealthArgs = false for cloak provider with no override, want true")
+	}
+}
+
+func TestApplyFileConfigToRuntime_AutoSolverSettings(t *testing.T) {
+	cfg := &RuntimeConfig{}
+	enabled := true
+	autoTrigger := true
+	triggerOnNavigate := true
+	triggerOnAction := false
+	maxAttempts := 5
+	solverTimeoutSec := 45
+	retryBaseDelayMs := 250
+	retryMaxDelayMs := 2500
+	llmFallback := true
+
+	fc := &FileConfig{
+		AutoSolver: AutoSolverFileConfig{
+			Enabled:           &enabled,
+			AutoTrigger:       &autoTrigger,
+			TriggerOnNavigate: &triggerOnNavigate,
+			TriggerOnAction:   &triggerOnAction,
+			MaxAttempts:       &maxAttempts,
+			SolverTimeoutSec:  &solverTimeoutSec,
+			RetryBaseDelayMs:  &retryBaseDelayMs,
+			RetryMaxDelayMs:   &retryMaxDelayMs,
+			Solvers:           []string{"jschallenge", "cloudflare"},
+			LLMProvider:       "openai",
+			LLMFallback:       &llmFallback,
+			External: AutoSolverExtConf{
+				CapsolverKey:  "cap-key",
+				TwoCaptchaKey: "two-key",
+			},
+		},
+	}
+
+	ApplyFileConfigToRuntime(cfg, fc)
+
+	if !cfg.AutoSolver.Enabled {
+		t.Fatal("AutoSolver.Enabled = false, want true")
+	}
+	if !cfg.AutoSolver.AutoTrigger {
+		t.Fatal("AutoSolver.AutoTrigger = false, want true")
+	}
+	if !cfg.AutoSolver.TriggerOnNavigate {
+		t.Fatal("AutoSolver.TriggerOnNavigate = false, want true")
+	}
+	if cfg.AutoSolver.TriggerOnAction {
+		t.Fatal("AutoSolver.TriggerOnAction = true, want false")
+	}
+	if cfg.AutoSolver.MaxAttempts != 5 {
+		t.Fatalf("AutoSolver.MaxAttempts = %d, want 5", cfg.AutoSolver.MaxAttempts)
+	}
+	if cfg.AutoSolver.SolverTimeoutSec != 45 {
+		t.Fatalf("AutoSolver.SolverTimeoutSec = %d, want 45", cfg.AutoSolver.SolverTimeoutSec)
+	}
+	if cfg.AutoSolver.RetryBaseDelayMs != 250 {
+		t.Fatalf("AutoSolver.RetryBaseDelayMs = %d, want 250", cfg.AutoSolver.RetryBaseDelayMs)
+	}
+	if cfg.AutoSolver.RetryMaxDelayMs != 2500 {
+		t.Fatalf("AutoSolver.RetryMaxDelayMs = %d, want 2500", cfg.AutoSolver.RetryMaxDelayMs)
+	}
+	if len(cfg.AutoSolver.Solvers) != 2 || cfg.AutoSolver.Solvers[0] != "jschallenge" {
+		t.Fatalf("AutoSolver.Solvers = %v, want configured order", cfg.AutoSolver.Solvers)
+	}
+	if cfg.AutoSolver.LLMProvider != "openai" {
+		t.Fatalf("AutoSolver.LLMProvider = %q, want openai", cfg.AutoSolver.LLMProvider)
+	}
+	if !cfg.AutoSolver.LLMFallback {
+		t.Fatal("AutoSolver.LLMFallback = false, want true")
+	}
+	if cfg.AutoSolver.CapsolverKey != "cap-key" {
+		t.Fatalf("AutoSolver.CapsolverKey = %q, want cap-key", cfg.AutoSolver.CapsolverKey)
+	}
+	if cfg.AutoSolver.TwoCaptchaKey != "two-key" {
+		t.Fatalf("AutoSolver.TwoCaptchaKey = %q, want two-key", cfg.AutoSolver.TwoCaptchaKey)
+	}
+}
+
+func TestLoadConfig_BrowserProviderAloneNoLongerMapsToDefault(t *testing.T) {
+	clearConfigEnvVars(t)
+	writeTestConfig(t, `{
+		"browser": {
+			"provider": "cloak"
+		}
+	}`)
+
+	cfg := Load()
+
+	// browser.provider is no longer supported; it should be ignored at load time
+	// and the default chrome provider is used.
+	if cfg.DefaultBrowser != "chrome" {
+		t.Errorf("DefaultBrowser = %q, want chrome (browser.provider ignored)", cfg.DefaultBrowser)
+	}
+	if cfg.DefaultBrowser != BrowserChrome {
+		t.Errorf("DefaultBrowser = %q, want %s (browser.provider ignored)", cfg.DefaultBrowser, BrowserChrome)
+	}
+}
+
+func TestLoadConfig_DefaultBrowserUsedEvenWithProviderPresent(t *testing.T) {
+	clearConfigEnvVars(t)
+	writeTestConfig(t, `{
+		"browser": {
+			"binary": "/opt/cloakbrowser/chrome"
+		},
+		"browsers": {
+			"default": "chrome"
+		}
+	}`)
+
+	cfg := Load()
+
+	// browsers.default is the only supported way to set the browser.
+	if cfg.DefaultBrowser != "chrome" {
+		t.Errorf("DefaultBrowser = %q, want chrome", cfg.DefaultBrowser)
+	}
+	if cfg.DefaultBrowser != BrowserChrome {
+		t.Errorf("DefaultBrowser = %q, want %s", cfg.DefaultBrowser, BrowserChrome)
+	}
+}
+
+func TestFileConfigFromRuntime_UsesDefaultBrowser(t *testing.T) {
+	cfg := &RuntimeConfig{
+		DefaultBrowser:    "chrome",
+		BrowsersAvailable: []string{"chrome"},
+		BrowserVersion:    "100.0.0.0",
+		ExtensionPaths:    []string{},
+	}
+
+	fc := FileConfigFromRuntime(cfg)
+
+	if fc.Browser.Provider != "" {
+		t.Errorf("FileConfigFromRuntime should not set browser.provider, got %q", fc.Browser.Provider)
+	}
+
+	if fc.Browsers.Default != "chrome" {
+		t.Errorf("FileConfigFromRuntime Browsers.Default = %q, want chrome", fc.Browsers.Default)
+	}
+
+	data, err := json.Marshal(fc)
+	if err != nil {
+		t.Fatalf("json.Marshal(FileConfig) error = %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal error = %v", err)
+	}
+	browser, ok := raw["browser"].(map[string]any)
+	if !ok {
+		t.Fatal("missing browser block in JSON output")
+	}
+	if _, ok := browser["provider"]; ok {
+		t.Fatal("browser.provider should not appear in marshaled JSON")
+	}
+	browsersBlock, ok := raw["browsers"].(map[string]any)
+	if !ok {
+		t.Fatal("missing browsers block in JSON output")
+	}
+	if def := browsersBlock["default"]; def != "chrome" {
+		t.Errorf("browsers.default in JSON = %v, want chrome", def)
+	}
+}
+
+func clearConfigEnvVars(t *testing.T) {
+	t.Helper()
+	envVars := []string{
+		"PINCHTAB_TOKEN", "PINCHTAB_CONFIG",
+	}
+	for _, v := range envVars {
+		_ = os.Unsetenv(v)
+	}
+}
+
+func setCloakBrowserDiscovery(t *testing.T, binary string) {
+	t.Helper()
+	original := discoverCloakBrowserBinary
+	discoverCloakBrowserBinary = func() string { return binary }
+	t.Cleanup(func() { discoverCloakBrowserBinary = original })
+}
+
+func writeTestConfig(t *testing.T, body string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.json")
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Setenv("PINCHTAB_CONFIG", path)
+	t.Cleanup(func() { _ = os.Unsetenv("PINCHTAB_CONFIG") })
+}
+
+// Pins the precedence contract when both legacy browser fields and explicit
+// browser.targets are set: targets are kept as authored (no legacy synthesis),
+// the legacy fields still seed the base runtime config, and target resolution
+// overlays target fields per-field on top of that base.
+func TestLoadConfig_LegacyAndTargetsBothSet_PrecedenceContract(t *testing.T) {
+	clearConfigEnvVars(t)
+	writeTestConfig(t, `{
+		"browser": {
+			"binary": "/legacy/bin/chrome",
+			"extraFlags": "--disable-gpu",
+			"proxy": {"server": "http://legacy-proxy.example:8080"},
+			"defaultTarget": "default",
+			"targets": {
+				"default": {
+					"provider": "chrome",
+					"binary": "/target/bin/chrome",
+					"proxy": {"server": "http://target-proxy.example:9090"}
+				}
+			}
+		}
+	}`)
+
+	var warned bool
+	logs := captureConfigSlog(t, func() {
+		cfg := Load()
+
+		if cfg.TargetsSynthesized {
+			t.Errorf("TargetsSynthesized = true, want false (explicit targets must not be marked as migrated)")
+		}
+		target, ok := cfg.Targets["default"]
+		if !ok {
+			t.Fatalf("Targets missing authored default entry: %v", cfg.Targets)
+		}
+		if target.Binary != "/target/bin/chrome" {
+			t.Errorf("target Binary = %q, want authored /target/bin/chrome", target.Binary)
+		}
+
+		// Legacy fields seed the BASE runtime config.
+		if cfg.BrowserBinary != "/legacy/bin/chrome" {
+			t.Errorf("base BrowserBinary = %q, want legacy /legacy/bin/chrome", cfg.BrowserBinary)
+		}
+		if cfg.BrowserExtraFlags != "--disable-gpu" {
+			t.Errorf("base BrowserExtraFlags = %q, want legacy --disable-gpu", cfg.BrowserExtraFlags)
+		}
+		if cfg.Proxy.Server != "http://legacy-proxy.example:8080" {
+			t.Errorf("base Proxy.Server = %q, want legacy proxy", cfg.Proxy.Server)
+		}
+
+		// A user-authored default target supplies the provider.
+		if cfg.DefaultBrowser != BrowserChrome {
+			t.Errorf("DefaultBrowser = %q, want %s from the authored target", cfg.DefaultBrowser, BrowserChrome)
+		}
+
+		// Target resolution overlays target fields on the legacy-seeded base.
+		resolved, err := ResolveDefaultBrowserTarget(cfg)
+		if err != nil {
+			t.Fatalf("ResolveDefaultBrowserTarget returned %v", err)
+		}
+		if resolved.Legacy {
+			t.Errorf("resolved.Legacy = true, want false with explicit targets")
+		}
+		if resolved.Config.BrowserBinary != "/target/bin/chrome" {
+			t.Errorf("resolved Binary = %q, want target /target/bin/chrome", resolved.Config.BrowserBinary)
+		}
+		if resolved.Config.Proxy.Server != "http://target-proxy.example:9090" {
+			t.Errorf("resolved Proxy.Server = %q, want target proxy", resolved.Config.Proxy.Server)
+		}
+		// Fields the target omits fall back to the legacy base.
+		if resolved.Config.BrowserExtraFlags != "--disable-gpu" {
+			t.Errorf("resolved BrowserExtraFlags = %q, want legacy --disable-gpu fallback", resolved.Config.BrowserExtraFlags)
+		}
+	})
+	warned = strings.Contains(logs, "config has both browser.targets and legacy")
+	if !warned {
+		t.Errorf("expected conflict warning in logs, got: %s", logs)
+	}
+	if strings.Contains(logs, "legacy fields ignored") {
+		t.Errorf("warning still claims legacy fields are ignored; they seed the base runtime config: %s", logs)
+	}
+}
+
+// captureConfigSlog redirects the default slog logger to a buffer for the
+// duration of fn and returns everything logged.
+func captureConfigSlog(t *testing.T, fn func()) string {
+	t.Helper()
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(old)
+	fn()
+	return buf.String()
+}
+
+func TestLoadConfig_TabLifecycleDefaults(t *testing.T) {
+	clearConfigEnvVars(t)
+	_ = os.Setenv("PINCHTAB_CONFIG", filepath.Join(t.TempDir(), "nonexistent.json"))
+	defer func() { _ = os.Unsetenv("PINCHTAB_CONFIG") }()
+
+	cfg := Load()
+	if cfg.TabLifecyclePolicy != "keep" {
+		t.Errorf("default TabLifecyclePolicy = %q, want keep", cfg.TabLifecyclePolicy)
+	}
+	if cfg.TabCloseDelay != 5*time.Minute {
+		t.Errorf("default TabCloseDelay = %v, want 5m", cfg.TabCloseDelay)
+	}
+}
+
+func TestLoadConfig_TabPolicyBlockPopulatesFields(t *testing.T) {
+	clearConfigEnvVars(t)
+	writeTestConfig(t, `{
+		"instanceDefaults": {
+			"tabPolicy": {
+				"eviction": "reject",
+				"lifecycle": "close_idle",
+				"closeDelaySec": 30
+			}
+		}
+	}`)
+
+	cfg := Load()
+	if cfg.TabEvictionPolicy != "reject" {
+		t.Errorf("TabEvictionPolicy = %q, want reject", cfg.TabEvictionPolicy)
+	}
+	if cfg.TabLifecyclePolicy != "close_idle" {
+		t.Errorf("TabLifecyclePolicy = %q, want close_idle", cfg.TabLifecyclePolicy)
+	}
+	if cfg.TabCloseDelay != 30*time.Second {
+		t.Errorf("TabCloseDelay = %v, want 30s", cfg.TabCloseDelay)
+	}
+}
+
+func TestLoadConfig_LegacyTabEvictionPolicyStillHonored(t *testing.T) {
+	clearConfigEnvVars(t)
+	writeTestConfig(t, `{
+		"instanceDefaults": {
+			"tabEvictionPolicy": "close_oldest"
+		}
+	}`)
+
+	cfg := Load()
+	if cfg.TabEvictionPolicy != "close_oldest" {
+		t.Errorf("legacy tabEvictionPolicy not honored; got %q", cfg.TabEvictionPolicy)
+	}
+	if cfg.TabLifecyclePolicy != "keep" {
+		t.Errorf("legacy-only config should leave lifecycle at default keep; got %q", cfg.TabLifecyclePolicy)
+	}
+}
+
+func TestLoadConfig_TabPolicyWinsOverLegacyEviction(t *testing.T) {
+	clearConfigEnvVars(t)
+	writeTestConfig(t, `{
+		"instanceDefaults": {
+			"tabEvictionPolicy": "close_oldest",
+			"tabPolicy": {
+				"eviction": "reject"
+			}
+		}
+	}`)
+
+	cfg := Load()
+	if cfg.TabEvictionPolicy != "reject" {
+		t.Errorf("tabPolicy.eviction should override legacy field; got %q", cfg.TabEvictionPolicy)
+	}
+}
+
+func TestLoadConfig_TabCloseDelayPreservesDefaultWhenAbsent(t *testing.T) {
+	clearConfigEnvVars(t)
+	writeTestConfig(t, `{
+		"instanceDefaults": {
+			"tabPolicy": {
+				"lifecycle": "close_idle"
+			}
+		}
+	}`)
+
+	cfg := Load()
+	if cfg.TabCloseDelay != 5*time.Minute {
+		t.Errorf("TabCloseDelay = %v, want 5m default", cfg.TabCloseDelay)
+	}
+}
+
+func TestLoadConfig_DefaultBrowsersNeverIncludesHighTrust(t *testing.T) {
+	clearConfigEnvVars(t)
+	writeTestConfig(t, `{}`)
+
+	cfg := Load()
+
+	if len(cfg.BrowsersAvailable) != 1 || cfg.BrowsersAvailable[0] != "chrome" {
+		t.Fatalf("BrowsersAvailable = %v, want [chrome]", cfg.BrowsersAvailable)
+	}
+
+	// Verify no high-trust browsers leaked into the default set.
+	highTrust := []string{"cloak", "ghost-chrome"}
+	for _, ht := range highTrust {
+		for _, b := range cfg.BrowsersAvailable {
+			if b == ht {
+				t.Errorf("high-trust browser %q must not appear in default BrowsersAvailable", ht)
+			}
+		}
+	}
+
+	if cfg.DefaultBrowser != "chrome" {
+		t.Errorf("DefaultBrowser = %q, want chrome", cfg.DefaultBrowser)
+	}
+}
+
+// M3 regression: a reload must be able to REMOVE targets and proxy — stale
+// routing and credentials must not survive deletion from the file.
+func TestApplyFileConfig_ReloadClearsRemovedProxyAndTargets(t *testing.T) {
+	cfg := &RuntimeConfig{}
+
+	withBlocks := &FileConfig{
+		Browser: BrowserConfig{
+			DefaultTarget: "cloak-1",
+			FallbackOrder: []string{"cloak-1"},
+			Targets: BrowserTargetsConfig{
+				"cloak-1": {Provider: BrowserCloak, Binary: "/opt/cloak/bin"},
+			},
+			Proxy: BrowserProxyConfig{
+				Server:   "http://proxy.example:8080",
+				Username: "user",
+				Password: "secret",
+			},
+		},
+	}
+	applyFileConfig(cfg, withBlocks)
+	if len(cfg.Targets) == 0 || cfg.Proxy.IsZero() {
+		t.Fatalf("setup failed: targets=%v proxy=%+v", cfg.Targets, cfg.Proxy.Redacted())
+	}
+
+	without := &FileConfig{}
+	applyFileConfig(cfg, without)
+
+	if len(cfg.Targets) != 0 {
+		t.Fatalf("targets not cleared on reload: %v", cfg.Targets)
+	}
+	if cfg.DefaultTarget != "" || len(cfg.FallbackOrder) != 0 {
+		t.Fatalf("defaultTarget/fallbackOrder not cleared: %q %v", cfg.DefaultTarget, cfg.FallbackOrder)
+	}
+	if cfg.TargetsSynthesized {
+		t.Fatal("TargetsSynthesized should clear with the targets")
+	}
+	if !cfg.Proxy.IsZero() {
+		t.Fatalf("proxy (and credentials) not cleared on reload: %+v", cfg.Proxy.Redacted())
+	}
+}
+
+func TestApplyFileConfig_ReloadLegacyOnlyStillSynthesizesTargets(t *testing.T) {
+	cfg := &RuntimeConfig{}
+	applyFileConfig(cfg, &FileConfig{
+		Browser: BrowserConfig{
+			Targets: BrowserTargetsConfig{"cloak-1": {Provider: BrowserCloak}},
+		},
+	})
+
+	legacyOnly := &FileConfig{
+		Browser: BrowserConfig{BrowserBinary: "/usr/bin/chrome"},
+	}
+	applyFileConfig(cfg, legacyOnly)
+
+	if len(cfg.Targets) == 0 {
+		t.Fatal("legacy-only reload should re-synthesize targets via the migration shim")
+	}
+	if !cfg.TargetsSynthesized {
+		t.Fatal("re-synthesized targets should be marked synthesized")
+	}
+	if _, ok := cfg.Targets[DefaultBrowserTargetName]; !ok {
+		t.Fatalf("expected synthesized default target, got %v", cfg.Targets)
+	}
+}
+
+func hasDiagnostic(diags []LoadDiagnostic, level slog.Level, message string) bool {
+	for _, d := range diags {
+		if d.Level == level && d.Message == message {
+			return true
+		}
+	}
+	return false
+}
+
+// LoadConfig is the side-effect-free loader: it returns the config plus
+// diagnostics for the caller to log, and never logs or os.Exits itself.
+func TestLoadConfig_ValidFileReturnsConfigAndDiagnostics(t *testing.T) {
+	clearConfigEnvVars(t)
+	writeTestConfig(t, `{"server":{"port":"8888"}}`)
+
+	cfg, diags, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v, want nil", err)
+	}
+	if cfg == nil || cfg.Port != "8888" {
+		t.Fatalf("LoadConfig() Port = %v, want 8888", cfg.Port)
+	}
+	if !hasDiagnostic(diags, slog.LevelDebug, "loading config file") {
+		t.Errorf("expected a debug 'loading config file' diagnostic, got %+v", diags)
+	}
+}
+
+// A malformed config file is non-fatal: LoadConfig returns the defaults config,
+// a warn diagnostic, and a nil error (the previous Load() logged + continued).
+func TestLoadConfig_MalformedFileWarnsWithoutError(t *testing.T) {
+	clearConfigEnvVars(t)
+	writeTestConfig(t, `{ this is not valid json`)
+
+	cfg, diags, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v, want nil (parse failure is non-fatal)", err)
+	}
+	if cfg == nil || cfg.Port != "9867" {
+		t.Fatalf("LoadConfig() Port = %v, want default 9867 when the file fails to parse", cfg.Port)
+	}
+	if !hasDiagnostic(diags, slog.LevelWarn, "failed to parse config") {
+		t.Errorf("expected a warn 'failed to parse config' diagnostic, got %+v", diags)
+	}
+}
+
+// The whole point of the key: a flagless server reads its threshold from the
+// config file. Asserting the resolved slog level, not just the string field,
+// is what makes this a behaviour test — the field could round-trip perfectly
+// and still never reach the logger.
+func TestLoadConfig_ServerLogLevelResolvesToAThreshold(t *testing.T) {
+	clearConfigEnvVars(t)
+	writeTestConfig(t, `{"server": {"logLevel": "warn"}}`)
+
+	cfg := Load()
+
+	if cfg.LogLevel != "warn" {
+		t.Fatalf("LogLevel = %q, want warn from the config file", cfg.LogLevel)
+	}
+	level, err := safelog.ParseLevel(cfg.LogLevel)
+	if err != nil {
+		t.Fatalf("ParseLevel(%q): %v", cfg.LogLevel, err)
+	}
+	if level != slog.LevelWarn {
+		t.Fatalf("resolved level = %v, want warn", level)
+	}
+}
+
+// An absent key must leave the runtime empty rather than writing a value, or the
+// flag can no longer tell "unset" from "configured info".
+func TestLoadConfig_AbsentServerLogLevelStaysUnset(t *testing.T) {
+	clearConfigEnvVars(t)
+	writeTestConfig(t, `{"server": {"bind": "127.0.0.1"}}`)
+
+	if cfg := Load(); cfg.LogLevel != "" {
+		t.Fatalf("LogLevel = %q with no key in the file, want empty", cfg.LogLevel)
+	}
+}
+
+// The config path must not be more forgiving than the flag path, and the message
+// an operator reads has to be the same one either way — hence the exact-equality
+// assertion against safelog.ParseLevel rather than a substring check.
+func TestValidateFileConfig_ServerLogLevelRejectsUnknownValues(t *testing.T) {
+	fc := DefaultFileConfig()
+	fc.Server.LogLevel = "verbose"
+
+	errs := ValidateFileConfig(&fc)
+
+	_, parseErr := safelog.ParseLevel("verbose")
+	if parseErr == nil {
+		t.Fatal("safelog.ParseLevel accepts \"verbose\"; this test no longer covers an unparseable value")
+	}
+	var found error
+	for _, err := range errs {
+		if strings.Contains(err.Error(), "server.logLevel") {
+			found = err
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("no server.logLevel error for an unparseable value; errors: %v", errs)
+	}
+	if want := "server.logLevel: " + parseErr.Error(); found.Error() != want {
+		t.Fatalf("error = %q, want %q so the config path reads like the flag path", found.Error(), want)
+	}
+	for _, accepted := range []string{"debug", "info", "warn", "error"} {
+		if !strings.Contains(found.Error(), accepted) {
+			t.Errorf("error %q does not name the accepted value %q", found.Error(), accepted)
+		}
+	}
+}
+
+func TestValidateFileConfig_ServerLogLevelAcceptsEveryParseableValue(t *testing.T) {
+	for _, level := range []string{"", "debug", "info", "warn", "warning", "error", "WARN", " warn "} {
+		fc := DefaultFileConfig()
+		fc.Server.LogLevel = level
+		for _, err := range ValidateFileConfig(&fc) {
+			if strings.Contains(err.Error(), "server.logLevel") {
+				t.Errorf("logLevel %q rejected: %v", level, err)
+			}
+		}
+	}
+}
+
+// config get/set plus a save/load round trip, which is the path the CLI takes.
+func TestServerLogLevelSurvivesSetSaveAndLoad(t *testing.T) {
+	fc := DefaultFileConfig()
+	if err := SetConfigValue(&fc, "server.logLevel", "warn"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	encoded, err := json.Marshal(fc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"logLevel":"warn"`) {
+		t.Fatalf("marshalled config does not carry the key: %s", encoded)
+	}
+
+	var reloaded FileConfig
+	if err := json.Unmarshal(encoded, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+	got, err := GetConfigValue(&reloaded, "server.logLevel")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got != "warn" {
+		t.Fatalf("get server.logLevel = %q after a round trip, want warn", got)
+	}
+}
+
+// A rejected set must leave the previous value alone, and the message must name
+// the accepted values just like the load path.
+func TestSetServerLogLevelRejectsUnknownValues(t *testing.T) {
+	fc := DefaultFileConfig()
+	fc.Server.LogLevel = "warn"
+
+	err := SetConfigValue(&fc, "server.logLevel", "verbose")
+	if err == nil {
+		t.Fatal("set accepted an unparseable level")
+	}
+	if !strings.Contains(err.Error(), "server.logLevel") || !strings.Contains(err.Error(), "warn") {
+		t.Errorf("error %q does not name the field and the accepted values", err.Error())
+	}
+	if fc.Server.LogLevel != "warn" {
+		t.Errorf("LogLevel = %q after a rejected set, want the previous value", fc.Server.LogLevel)
+	}
+}
+
+// FileConfigFromRuntime is the save side of `config set` on a running config; a
+// missing field there silently drops the operator's setting on the next save.
+func TestFileConfigFromRuntimeCarriesTheLogLevel(t *testing.T) {
+	fc := FileConfigFromRuntime(&RuntimeConfig{LogLevel: "error"})
+	if fc.Server.LogLevel != "error" {
+		t.Fatalf("Server.LogLevel = %q, want error", fc.Server.LogLevel)
+	}
+}
+
+// server.stateDir must actually relocate profiles. finalizeProfileConfig's
+// filepath.Join(StateDir, "profiles") fallback was unreachable because
+// DefaultFileConfig pre-filled Profiles.BaseDir with an absolute userConfigDir() path —
+// the same pre-filling that baked a host home directory into every written config. With
+// it empty, this fallback is the live path, so a throwaway state dir stops writing
+// profiles and quarantine directories into the real profile set.
+func TestStateDirAloneRelocatesTheProfilesBaseDir(t *testing.T) {
+	clearConfigEnvVars(t)
+	stateDir := filepath.Join(t.TempDir(), "state")
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	body := fmt.Sprintf(`{"server":{"port":"9867","token":"tok","stateDir":%q}}`, stateDir)
+	if err := os.WriteFile(cfgPath, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PINCHTAB_CONFIG", cfgPath)
+
+	cfg := Load()
+
+	wantBase := filepath.Join(stateDir, "profiles")
+	if cfg.ProfilesBaseDir != wantBase {
+		t.Errorf("ProfilesBaseDir = %q, want %q — the stateDir fallback is unreachable again", cfg.ProfilesBaseDir, wantBase)
+	}
+	if cfg.ProfileDir != filepath.Join(wantBase, "default") {
+		t.Errorf("ProfileDir = %q, want it under the relocated base", cfg.ProfileDir)
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" && strings.HasPrefix(cfg.ProfilesBaseDir, filepath.Join(home, ".pinchtab")) {
+		t.Errorf("ProfilesBaseDir still resolves into the real profile set: %q", cfg.ProfilesBaseDir)
+	}
+}
+
+// The fallback is only reachable while nothing pre-fills BaseDir. This pins the shipped
+// FileConfig default as empty, so restoring the pre-fill reds here by name rather than
+// silently making the test above depend on a value nobody sets.
+func TestTheShippedProfilesBaseDirIsEmptySoTheFallbackStaysLive(t *testing.T) {
+	if got := DefaultFileConfig().Profiles.BaseDir; got != "" {
+		t.Errorf("DefaultFileConfig().Profiles.BaseDir = %q, want empty: a pre-filled absolute path makes finalizeProfileConfig's stateDir fallback dead code and bakes a host path into every written config", got)
+	}
+}
+
+// An explicit profiles.baseDir still wins: the fallback must not override what the user
+// set.
+func TestAnExplicitProfilesBaseDirStillWins(t *testing.T) {
+	clearConfigEnvVars(t)
+	explicit := filepath.Join(t.TempDir(), "chosen-profiles")
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	body := fmt.Sprintf(`{"server":{"port":"9867","token":"tok","stateDir":%q},"profiles":{"baseDir":%q}}`, filepath.Join(t.TempDir(), "state"), explicit)
+	if err := os.WriteFile(cfgPath, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PINCHTAB_CONFIG", cfgPath)
+
+	if got := Load().ProfilesBaseDir; got != explicit {
+		t.Errorf("ProfilesBaseDir = %q, want the explicitly configured %q", got, explicit)
+	}
+}

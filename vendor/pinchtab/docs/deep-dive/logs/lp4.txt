@@ -1,0 +1,300 @@
+dev bench pinchtab --max-turns 100 --verbose --groups 0,1
+warning: multiple providers configured, defaulting to anthropic
+Rebuilding pinchtab with pinchtab-benchmark.json (wrapContent=false)...
+Compose now can delegate build to bake for better performances
+Just set COMPOSE_BAKE=true
+[+] Building 1.6s (29/29) FINISHED                                                   docker:desktop-linux
+ => [pinchtab internal] load build definition from Dockerfile                                        0.0s
+ => => transferring dockerfile: 2.48kB                                                               0.0s
+ => [pinchtab internal] load metadata for docker.io/library/alpine:3.21                              0.5s
+ => [pinchtab internal] load metadata for docker.io/oven/bun:1                                       0.5s
+ => [pinchtab internal] load metadata for docker.io/library/golang:1.26-alpine                       0.6s
+ => [pinchtab internal] load .dockerignore                                                           0.0s
+ => => transferring context: 504B                                                                    0.0s
+ => [pinchtab dashboard 1/6] FROM docker.io/oven/bun:1@sha256:87416c977a612a204eb54ab9f3927023c2a3c  0.0s
+ => => resolve docker.io/oven/bun:1@sha256:87416c977a612a204eb54ab9f3927023c2a3c971f4f345a01da08ea6  0.0s
+ => [pinchtab internal] load build context                                                           0.9s
+ => => transferring context: 423.26kB                                                                0.9s
+ => [pinchtab stage-2 1/6] FROM docker.io/library/alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e  0.0s
+ => => resolve docker.io/library/alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8  0.0s
+ => [pinchtab builder 1/9] FROM docker.io/library/golang:1.26-alpine@sha256:f85330846cde1e57ca9ec30  0.0s
+ => => resolve docker.io/library/golang:1.26-alpine@sha256:f85330846cde1e57ca9ec309382da3b8e6ae3ab9  0.0s
+ => CACHED [pinchtab stage-2 2/6] RUN apk add --no-cache     chromium     nss     freetype     harf  0.0s
+ => CACHED [pinchtab stage-2 3/6] RUN adduser -D -h /data -g '' pinchtab &&     mkdir -p /data &&    0.0s
+ => CACHED [pinchtab builder 2/9] RUN apk add --no-cache git                                         0.0s
+ => CACHED [pinchtab builder 3/9] WORKDIR /build                                                     0.0s
+ => CACHED [pinchtab builder 4/9] COPY go.mod go.sum ./                                              0.0s
+ => CACHED [pinchtab builder 5/9] RUN go mod download                                                0.0s
+ => CACHED [pinchtab builder 6/9] COPY . .                                                           0.0s
+ => CACHED [pinchtab dashboard 2/6] WORKDIR /build                                                   0.0s
+ => CACHED [pinchtab dashboard 3/6] COPY dashboard/package.json dashboard/bun.lock ./                0.0s
+ => CACHED [pinchtab dashboard 4/6] RUN bun install --frozen-lockfile                                0.0s
+ => CACHED [pinchtab dashboard 5/6] COPY dashboard/ .                                                0.0s
+ => CACHED [pinchtab dashboard 6/6] RUN bun run build                                                0.0s
+ => CACHED [pinchtab builder 7/9] COPY --from=dashboard /build/dist/ internal/dashboard/dashboard/   0.0s
+ => CACHED [pinchtab builder 8/9] RUN mv internal/dashboard/dashboard/index.html internal/dashboard  0.0s
+ => CACHED [pinchtab builder 9/9] RUN go build -ldflags="-s -w" -o pinchtab ./cmd/pinchtab           0.0s
+ => CACHED [pinchtab stage-2 4/6] COPY --from=builder /build/pinchtab /usr/local/bin/pinchtab        0.0s
+ => CACHED [pinchtab stage-2 5/6] COPY --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entr  0.0s
+ => CACHED [pinchtab stage-2 6/6] WORKDIR /data                                                      0.0s
+ => [pinchtab] exporting to image                                                                    0.0s
+ => => exporting layers                                                                              0.0s
+ => => exporting manifest sha256:da7f4403d6e06e90879bf90cca17952d700c1f789dcce834fd0f53899b26ff05    0.0s
+ => => exporting config sha256:36a6628c08b8fdba1ceb66bf2b511b5f1586f66649d79c637a5612295ea221de      0.0s
+ => => exporting attestation manifest sha256:9948667d9d1b546780e45099113d78a8b7e69a07ef229d77f6044c  0.0s
+ => => exporting manifest list sha256:901dbf79480178c5e449c65b731f52be763452de404c14b6fed287d29737e  0.0s
+ => => naming to docker.io/library/tools-pinchtab:latest                                             0.0s
+ => => unpacking to docker.io/library/tools-pinchtab:latest                                          0.0s
+ => [pinchtab] resolving provenance for metadata file                                                0.0s
+[+] Running 2/2
+ ✔ pinchtab                    Built                                                                 0.0s 
+ ✔ Container tools-pinchtab-1  Started                                                               5.5s 
+Verified: pinchtab running with wrapContent=false
+=== PinchTab Benchmark Run #1 ===
+Timestamp: 20260420_135248
+Report: <repo>/tests/benchmark/results/pinchtab_benchmark_20260420_135248.json
+
+[benchmark-runner] provider=anthropic model=claude-haiku-4-5-20251001 lane=pinchtab groups=0,1 report=<repo>/tests/benchmark/results/pinchtab_benchmark_20260420_135248.json
+
+══ Benchmark start ══
+  lane:   pinchtab
+  model:  claude-haiku-4-5-20251001
+  report: <repo>/tests/benchmark/results/pinchtab_benchmark_20260420_135248.json
+
+  Group 0 — 5 step(s):
+    0.1  Navigate to page
+    0.2  Take snapshot
+    0.3  Read page text
+    0.4  Click a link
+    0.5  Extract specific data
+
+  Group 1 — 5 step(s):
+    1.1  Fill a text input
+    1.2  Click a button
+    1.3  Use search functionality
+    1.4  Handle dynamic content
+    1.5  Navigate back
+
+  Total: 10 step(s) across 2 group(s)
+
+
+─── Turn 1/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2 in, 6232 cc, 0 cr, 122 out
+▶ ./scripts/pt nav http://fixtures/ --snap
+  ✓ C16858173BE9063C5B85DE3B79C6EB54
+       # PinchTab Benchmark - Home | http://fixtures/ | 13 nodes (+13 lines) [346ms]
+
+─── Turn 2/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 326 in, 0 cc, 6232 cr, 148 out
+▶ ./scripts/runner step-end 0 1 answer "Page loaded successfully at http://fixt...
+  ✓ Recorded 0.1 answer
+       Verified: Step 0.1 = pass [1.666s]
+
+─── Turn 3/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 565 in, 0 cc, 6232 cr, 106 out
+▶ ./scripts/pt snap
+  ✓ # PinchTab Benchmark - Home | http://fixtures/ | 13 nodes
+       e0:heading "PinchTab Benchmark Suite" (+12 lines) [104ms]
+
+─── Turn 4/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 846 in, 0 cc, 6232 cr, 148 out
+▶ ./scripts/runner step-end 0 2 answer "Snapshot captured with 13 nodes and act...
+  ✓ Recorded 0.2 answer
+       Verified: Step 0.2 = pass [1.664s]
+
+─── Turn 5/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1092 in, 0 cc, 6232 cr, 105 out
+▶ ./scripts/pt text
+  ✓ Welcome to the Benchmark Test Suite
+             This site contains controlled test pages for verifying browse... (+9 lines) [79ms]
+
+─── Turn 6/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1325 in, 0 cc, 6232 cr, 153 out
+▶ ./scripts/runner step-end 0 3 answer "Text content extracted: Welcome message...
+  ✓ Recorded 0.3 answer
+       Verified: Step 0.3 = pass [1.667s]
+
+─── Turn 7/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1587 in, 0 cc, 6232 cr, 112 out
+▶ ./scripts/pt click e1 --snap-diff
+  ✓ OK
+       # Articles - PinchTab Benchmark | http://fixtures/articles.html | 1... (+19 lines) [168ms]
+
+─── Turn 8/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1774 in, 0 cc, 6232 cr, 159 out
+▶ ./scripts/runner step-end 0 4 answer "Clicked link e1 (Articles), navigated t...
+  ✓ Recorded 0.4 answer
+       Verified: Step 0.4 = pass [1.664s]
+
+─── Turn 9/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2045 in, 0 cc, 6232 cr, 114 out
+▶ ./scripts/pt text e2
+  ✓ Article Library — VERIFY_ARTICLES_PAGE_67890 [107ms]
+
+─── Turn 10/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1735 in, 0 cc, 6232 cr, 143 out
+▶ ./scripts/runner step-end 0 5 answer "Extracted text from element e2 (heading...
+  ✓ Recorded 0.5 answer
+       Verified: Step 0.5 = pass [1.666s]
+
+─── Turn 11/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1976 in, 0 cc, 6232 cr, 127 out
+▶ ./scripts/pt nav http://fixtures/form.html --snap
+  ✓ C16858173BE9063C5B85DE3B79C6EB54
+       # Form - PinchTab Benchmark | http://fixtures/form.html | 27 nodes (+27 lines) [320ms]
+
+─── Turn 12/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2000 in, 0 cc, 6232 cr, 114 out
+▶ ./scripts/pt fill e3 "John Doe" --snap-diff
+  ✓ OK
+       # Form - PinchTab Benchmark | http://fixtures/form.html | 27 nodes ... (+27 lines) [111ms]
+
+─── Turn 13/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2467 in, 0 cc, 6232 cr, 136 out
+▶ ./scripts/runner step-end 1 1 answer "Filled text input e3 (Full Name) with '...
+  ✓ Recorded 1.1 answer
+       Verified: Step 1.1 = pass [1.649s]
+
+─── Turn 14/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1957 in, 0 cc, 6232 cr, 117 out
+▶ ./scripts/pt fill e4 "john@example.com" --snap-diff
+  ✓ OK
+       # Form - PinchTab Benchmark | http://fixtures/form.html | 27 nodes ... (+27 lines) [110ms]
+
+─── Turn 15/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2440 in, 0 cc, 6232 cr, 109 out
+▶ ./scripts/pt fill e5 "555-1234" --snap-diff
+  ✓ OK
+       # Form - PinchTab Benchmark | http://fixtures/form.html | 27 nodes ... (+27 lines) [111ms]
+
+─── Turn 16/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2519 in, 0 cc, 6232 cr, 98 out
+▶ ./scripts/pt click e25 --snap-diff
+  ✓ OK
+       # Form - PinchTab Benchmark | http://fixtures/form.html | 28 nodes ... (+28 lines) [124ms]
+
+─── Turn 17/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2997 in, 0 cc, 6232 cr, 137 out
+▶ ./scripts/runner step-end 1 2 answer "Clicked Submit Form button (e25), trigg...
+  ✓ Recorded 1.2 answer
+       Verified: Step 1.2 = pass [1.654s]
+
+─── Turn 18/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2310 in, 0 cc, 6232 cr, 112 out
+▶ ./scripts/pt nav http://fixtures/search.html --snap
+  ✓ C16858173BE9063C5B85DE3B79C6EB54
+       # Search - PinchTab Benchmark | http://fixtures/search.html | 5 nodes (+5 lines) [331ms]
+
+─── Turn 19/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2560 in, 0 cc, 6232 cr, 107 out
+▶ ./scripts/pt fill e3 "climate" --snap-diff
+  ✓ OK
+       # Search - PinchTab Benchmark | http://fixtures/search.html | 5 nod... (+5 lines) [112ms]
+
+─── Turn 20/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2097 in, 0 cc, 6232 cr, 100 out
+▶ ./scripts/pt click e4 --snap-diff
+  ✓ OK
+       # Search - PinchTab Benchmark | http://fixtures/search.html | 7 nod... (+7 lines) [114ms]
+
+─── Turn 21/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2365 in, 0 cc, 6232 cr, 151 out
+▶ ./scripts/runner step-end 1 3 answer "Entered 'climate' in search box and cli...
+  ✓ Recorded 1.3 answer
+       Verified: Step 1.3 = pass [1.671s]
+
+─── Turn 22/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 1715 in, 0 cc, 6232 cr, 122 out
+▶ ./scripts/pt nav http://fixtures/dashboard.html --snap
+  ✓ C16858173BE9063C5B85DE3B79C6EB54
+       # Dashboard - PinchTab Benchmark | http://fixtures/dashboard.html |... (+57 lines) [319ms]
+
+─── Turn 23/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2531 in, 0 cc, 6232 cr, 114 out
+▶ ./scripts/pt select e42 "Completed" --snap-diff
+  ✓ OK
+       # Dashboard - PinchTab Benchmark | http://fixtures/dashboard.html |... (+57 lines) [116ms]
+
+─── Turn 24/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2857 in, 0 cc, 6232 cr, 111 out
+▶ ./scripts/pt click e55 --snap-diff
+  ✓ OK
+       # Dashboard - PinchTab Benchmark | http://fixtures/dashboard.html |... (+57 lines) [118ms]
+
+─── Turn 25/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 3655 in, 0 cc, 6232 cr, 175 out
+▶ ./scripts/runner step-end 1 4 answer "Navigated to dashboard.html, selected '...
+  ✓ Recorded 1.4 answer
+       Verified: Step 1.4 = pass [1.665s]
+
+─── Turn 26/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 3490 in, 0 cc, 6232 cr, 111 out
+▶ ./scripts/pt back --snap
+  ✓ http://fixtures/search.html
+       # Search - PinchTab Benchmark | http://fixtures/search.html | 7 nodes (+7 lines) [322ms]
+
+─── Turn 27/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 3748 in, 0 cc, 6232 cr, 154 out
+▶ ./scripts/runner step-end 1 5 answer "Used browser back navigation to return ...
+  ✓ Recorded 1.5 answer
+       Verified: Step 1.5 = pass [1.669s]
+
+─── Turn 28/100 ───
+  ← anthropic/claude-haiku-4-5-20251001: 2977 in, 0 cc, 6232 cr, 254 out
+Wrote <repo>/tests/benchmark/results/pinchtab_benchmark_20260420_135248_summary.md
+
+# Benchmark Summary
+
+| Metric | Value |
+|--------|-------|
+| Type | pinchtab |
+| Model | claude-haiku-4-5-20251001 |
+| Steps Answered | 10 |
+| Execution Failed | 0 |
+| Execution Skipped | 0 |
+| Answer Rate | 100% |
+| Verified Passed | 10 |
+| Verified Failed | 0 |
+| Verified Skipped | 0 |
+| Pending Verification | 0 |
+| Verification Pass Rate | 100% |
+| Tool Calls | 0 |
+
+## Run Usage
+
+| Metric | Value |
+|--------|-------|
+| Source | anthropic-messages |
+| Provider | anthropic |
+| API Requests | 28 |
+| Input Tokens (uncached) | 57958 |
+| Cache Creation Input Tokens | 6232 |
+| Cache Read Input Tokens | 168264 |
+| Total Input Tokens | 232454 |
+| Output Tokens | 3659 |
+| Total Tokens | 236113 |
+
+## Pending Verification
+
+- none
+
+## Failed Steps
+
+- none
+
+## Verification Failures
+
+- none
+
+[run-usage] provider=anthropic requests=28 input=57958 cache_create=6232 cache_read=168264 output=3659 total=236113
+
+══ Benchmark result ══
+  answered:             10
+  execution failed:     0
+  execution skipped:    0
+  verified passed:      10
+  verified failed:      0
+  verified skipped:     0
+  pending verification: 0
+  tool calls:           0
+  verification pass rate: 100.0% (10/10)

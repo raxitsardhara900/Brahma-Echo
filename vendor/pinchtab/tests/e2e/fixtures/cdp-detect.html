@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>CDP Detection Tests</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #eee; }
+    .pass { color: #4caf50; }
+    .fail { color: #f44336; }
+    .warn { color: #ff9800; }
+    table { border-collapse: collapse; margin: 20px 0; width: 100%; }
+    td, th { border: 1px solid #444; padding: 8px; text-align: left; }
+    th { background: #333; }
+    h2 { color: #888; margin-top: 30px; }
+  </style>
+</head>
+<body>
+  <h1>🔍 CDP Detection Tests</h1>
+  <p>Checks for Chrome DevTools Protocol automation signals and runtime fingerprints</p>
+
+  <h2>Critical Checks (CDP Traces)</h2>
+  <table id="critical">
+    <tr><th>Check</th><th>Result</th><th>Detail</th></tr>
+  </table>
+
+  <h2>Runtime Signals</h2>
+  <table id="runtime">
+    <tr><th>Signal</th><th>Result</th><th>Value</th></tr>
+  </table>
+
+  <h2>Automation Environment</h2>
+  <table id="env">
+    <tr><th>Property</th><th>Value</th></tr>
+  </table>
+
+  <script>
+    const criticalTable = document.getElementById('critical');
+    const runtimeTable  = document.getElementById('runtime');
+    const envTable      = document.getElementById('env');
+    const results       = {};
+
+    function addCheck(name, passed, detail, severity = 'critical') {
+      results[name] = { passed, detail, severity };
+      const table = severity === 'critical' ? criticalTable : runtimeTable;
+      const row = table.insertRow();
+      const cls = passed ? 'pass' : (severity === 'warn' ? 'warn' : 'fail');
+      const icon = passed ? '✓ PASS' : (severity === 'warn' ? '⚠ WARN' : '✗ FAIL');
+      row.innerHTML = `
+        <td>${name}</td>
+        <td class="${cls}">${icon}</td>
+        <td>${String(detail).substring(0, 120)}</td>
+      `;
+    }
+
+    function addEnv(name, value) {
+      const row = envTable.insertRow();
+      row.innerHTML = `<td>${name}</td><td>${String(value).substring(0, 150)}</td>`;
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // CRITICAL: Known CDP window object traces
+    // ─────────────────────────────────────────────────────────────────
+
+    // ChromeDriver injects cdc_ prefixed variables
+    const cdcProps = Object.getOwnPropertyNames(window).filter(p =>
+      /^cdc_|^\$cdc_/.test(p)
+    );
+    addCheck('no_cdc_properties', cdcProps.length === 0,
+      cdcProps.length === 0 ? 'Clean' : `Found: ${cdcProps.join(', ')}`);
+
+    // Selenium/WebDriver injection markers
+    const seleniumProps = Object.getOwnPropertyNames(window).filter(p =>
+      /^__webdriver|^__selenium|^__driver_evaluate|^__webdriver_script/.test(p)
+    );
+    addCheck('no_selenium_globals', seleniumProps.length === 0,
+      seleniumProps.length === 0 ? 'Clean' : `Found: ${seleniumProps.join(', ')}`);
+
+    // Puppeteer/Playwright injection markers
+    const ppProps = Object.getOwnPropertyNames(window).filter(p =>
+      /^__puppeteer|^__playwright|^\$chrome_|^__pw_/.test(p)
+    );
+    addCheck('no_puppeteer_playwright_globals', ppProps.length === 0,
+      ppProps.length === 0 ? 'Clean' : `Found: ${ppProps.join(', ')}`);
+
+    // CDP Runtime.evaluate leaves __webdriver_script_fn
+    const hasRuntimeFn = !!(window.__webdriver_script_fn);
+    addCheck('no_runtime_evaluate_trace', !hasRuntimeFn,
+      hasRuntimeFn ? 'CDP Runtime.evaluate trace found' : 'Clean');
+
+    // Check for cdc_adoQpoasnfa76pfcZLmcfl_ family (ChromeDriver 75-87)
+    const legacyCdc = !!(window.cdc_adoQpoasnfa76pfcZLmcfl_Array ||
+                         window.cdc_adoQpoasnfa76pfcZLmcfl_Promise ||
+                         window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol);
+    addCheck('no_legacy_cdc_objects', !legacyCdc,
+      legacyCdc ? 'Legacy cdc_ objects found' : 'Clean');
+
+    // navigator.webdriver should not be true
+    const wdTrue = navigator.webdriver === true;
+    addCheck('webdriver_not_true', !wdTrue,
+      `navigator.webdriver = ${navigator.webdriver}`);
+
+    // Error stack should not mention "puppeteer" or "playwright"
+    let stackClean = true;
+    let stackDetail = 'Clean';
+    try {
+      const err = new Error('probe');
+      if (err.stack) {
+        const lower = err.stack.toLowerCase();
+        if (lower.includes('puppeteer') || lower.includes('playwright') || lower.includes('selenium')) {
+          stackClean = false;
+          stackDetail = 'Automation tool found in error stack';
+        }
+      }
+    } catch (_) {}
+    addCheck('error_stack_clean', stackClean, stackDetail);
+
+    // ─────────────────────────────────────────────────────────────────
+    // RUNTIME SIGNALS (warn severity — informational)
+    // ─────────────────────────────────────────────────────────────────
+
+    // Chrome DevTools connection: __chrome_devtools_target_id
+    const hasDevToolsTarget = !!window.__chrome_devtools_target_id;
+    addCheck('no_devtools_target_id', !hasDevToolsTarget,
+      hasDevToolsTarget ? 'DevTools target ID found' : 'Clean', 'warn');
+
+    // Check if Performance.now() returns suspiciously low values (CDP resets it)
+    const perfNow = performance.now();
+    const perfOk = perfNow > 0;
+    addCheck('performance_now_positive', perfOk,
+      `performance.now() = ${perfNow.toFixed(2)}ms`, 'warn');
+
+    // CDP opens a lot of domains — check for overridden console methods
+    let consoleClean = true;
+    let consoleDetail = 'Native';
+    try {
+      const logStr = Function.prototype.toString.call(console.log);
+      if (!logStr.includes('[native code]')) {
+        consoleClean = false;
+        consoleDetail = 'console.log is not native';
+      }
+    } catch (_) {}
+    addCheck('console_log_native', consoleClean, consoleDetail, 'warn');
+
+    // Chrome.runtime existence (expected in a real Chrome browser)
+    const hasChromeRuntime = !!(window.chrome && window.chrome.runtime);
+    addCheck('chrome_runtime_present', hasChromeRuntime,
+      hasChromeRuntime ? 'Present' : 'Missing', 'warn');
+
+    // navigator.userAgent should not contain HeadlessChrome
+    const isHeadlessUA = navigator.userAgent.includes('HeadlessChrome') ||
+                         navigator.userAgent.includes('Headless');
+    addCheck('ua_not_headless', !isHeadlessUA,
+      isHeadlessUA ? `UA contains headless indicator: ${navigator.userAgent.substring(0, 80)}` :
+                     'Normal Chrome UA', 'warn');
+
+    // Total count of automation-pattern window properties
+    const allAutoProps = Object.getOwnPropertyNames(window).filter(p =>
+      /^cdc_|^\$cdc_|^__webdriver|^__selenium|^__driver|^\$chrome_|^__puppeteer|^__playwright|^__pw_/.test(p)
+    );
+    addCheck('total_automation_props_zero', allAutoProps.length === 0,
+      allAutoProps.length === 0 ? '0 automation properties' : `${allAutoProps.length} found: ${allAutoProps.join(', ')}`, 'warn');
+
+    // ─────────────────────────────────────────────────────────────────
+    // ENVIRONMENT INFO
+    // ─────────────────────────────────────────────────────────────────
+    addEnv('User Agent', navigator.userAgent);
+    addEnv('navigator.webdriver', String(navigator.webdriver));
+    addEnv('window.chrome', typeof window.chrome);
+    addEnv('performance.now()', performance.now().toFixed(2) + 'ms');
+    addEnv('CDP cdc_ props found', cdcProps.join(', ') || 'none');
+    addEnv('Selenium props found', seleniumProps.join(', ') || 'none');
+    addEnv('Puppeteer/Playwright props', ppProps.join(', ') || 'none');
+    addEnv('All automation props', allAutoProps.join(', ') || 'none');
+
+    // ─────────────────────────────────────────────────────────────────
+    // SCORING
+    // ─────────────────────────────────────────────────────────────────
+    window.__cdpDetectResults = results;
+
+    const criticalChecks = Object.values(results).filter(r => r.severity === 'critical');
+    const warnChecks     = Object.values(results).filter(r => r.severity === 'warn');
+    const critPassed     = criticalChecks.filter(r => r.passed).length;
+    const warnPassed     = warnChecks.filter(r => r.passed).length;
+
+    window.__cdpDetectScore = {
+      critical:       critPassed,
+      criticalTotal:  criticalChecks.length,
+      warnings:       warnPassed,
+      warningsTotal:  warnChecks.length,
+      passed:         critPassed === criticalChecks.length,
+    };
+
+    const summaryDiv = document.createElement('div');
+    summaryDiv.style.cssText = 'margin:20px 0;padding:20px;border-radius:8px;font-size:18px;';
+    summaryDiv.style.background = window.__cdpDetectScore.passed ? '#1b5e20' : '#b71c1c';
+    summaryDiv.innerHTML = `
+      <strong>${window.__cdpDetectScore.passed ? '✓ PASSED' : '✗ FAILED'}</strong><br>
+      Critical: ${critPassed}/${criticalChecks.length} |
+      Warnings: ${warnPassed}/${warnChecks.length}
+    `;
+    document.body.insertBefore(summaryDiv, document.querySelector('h2'));
+  </script>
+</body>
+</html>

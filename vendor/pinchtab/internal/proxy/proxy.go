@@ -1,0 +1,203 @@
+// Package proxy provides a shared HTTP reverse-proxy helper used by
+// strategies and the dashboard fallback routes. It consolidates the
+// previously duplicated proxyHTTP / proxyRequest functions into one
+// place with a shared http.Client and WebSocket upgrade support.
+package proxy
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"github.com/pinchtab/pinchtab/internal/activity"
+	"github.com/pinchtab/pinchtab/internal/httpx"
+)
+
+var DefaultClient = &http.Client{Timeout: httpx.MaxNavigationHTTPDuration}
+
+type Options struct {
+	Client            *http.Client
+	AllowedURL        func(*url.URL) bool
+	RewriteRequest    func(*http.Request)
+	OnResponseHeaders func(origReq *http.Request, resp *http.Response)
+	// OnResponse is called with the upstream response body for non-streaming
+	// responses (Content-Type application/json, body ≤ 64 KB). The original
+	// request is passed so callers can enrich activity context.
+	OnResponse func(origReq *http.Request, body []byte)
+}
+
+// strippedProxyRequestHeaders never reach the instance by being COPIED. Every member is
+// dropped from the blind copy; x-request-id is then re-added deliberately by
+// httpx.ForwardRequestID, which is what makes one proxied request traceable in both the
+// outer and the instance log instead of only the outer one.
+//
+// It stays on this list rather than being deleted from it because the two are different
+// permissions: pass-through would forward whatever arrived under that name from anywhere,
+// while the re-add forwards the one value the outer chain resolved for this request.
+// RequestIDMiddleware stamps that value onto the request, so what is forwarded is the id
+// the outer server logs — including when the caller supplied it, which that middleware
+// honours by design. The rest of this list protects genuinely different things and is
+// untouched: cookie carries the session secret, and the forwarding trio plus x-real-ip
+// carry client network identity the instance has no business learning.
+var strippedProxyRequestHeaders = map[string]struct{}{
+	"cookie":            {},
+	"forwarded":         {},
+	"x-forwarded-for":   {},
+	"x-forwarded-host":  {},
+	"x-forwarded-proto": {},
+	"x-real-ip":         {},
+	"x-request-id":      {},
+}
+
+func Forward(w http.ResponseWriter, r *http.Request, targetURL *url.URL, opts Options) {
+	if targetURL == nil {
+		httpx.Error(w, 502, fmt.Errorf("proxy error: missing target URL"))
+		return
+	}
+	if opts.AllowedURL != nil && !opts.AllowedURL(targetURL) {
+		httpx.Error(w, 400, fmt.Errorf("invalid proxy target"))
+		return
+	}
+
+	proxyReq := r.Clone(r.Context())
+	proxyReq.URL = targetURL
+	proxyReq.Host = targetURL.Host
+	proxyReq.Header = r.Header.Clone()
+	activity.PropagateHeaders(r.Context(), proxyReq)
+	if opts.RewriteRequest != nil {
+		opts.RewriteRequest(proxyReq)
+	}
+
+	if isWebSocketUpgrade(proxyReq) {
+		ProxyWebSocket(w, proxyReq, targetURL.String())
+		return
+	}
+
+	client := opts.Client
+	if client == nil {
+		client = DefaultClient
+	}
+
+	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL.String(), r.Body)
+	if err != nil {
+		httpx.Error(w, 502, fmt.Errorf("proxy error: %w", err))
+		return
+	}
+	copyRequestHeaders(outReq.Header, proxyReq.Header)
+	httpx.ForwardRequestID(outReq.Header, proxyReq.Header)
+
+	resp, err := client.Do(outReq)
+	if err != nil {
+		httpx.Error(w, 502, fmt.Errorf("instance unreachable: %w", err))
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	httpx.CopyProxiedResponseHeaders(w.Header(), resp.Header)
+	recordProxiedFailureReason(w, resp)
+
+	// Enrich activity from response headers (always available, regardless of body size).
+	enrichActivityFromHeaders(r, resp.Header)
+	if opts.OnResponseHeaders != nil {
+		opts.OnResponseHeaders(r, resp)
+	}
+
+	// For small JSON responses, buffer to allow OnResponse to inspect the body.
+	if opts.OnResponse != nil && isSmallJSON(resp) {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(body)
+		if readErr == nil {
+			opts.OnResponse(r, body)
+		}
+		return
+	}
+
+	w.WriteHeader(resp.StatusCode)
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			_, _ = w.Write(buf[:n])
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+		if readErr != nil {
+			break
+		}
+	}
+}
+
+func isSmallJSON(resp *http.Response) bool {
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") {
+		return false
+	}
+	return resp.ContentLength >= 0 && resp.ContentLength <= 64<<10
+}
+
+// HTTP forwards an HTTP request to targetURL, streaming the response
+// back to w. If the request is a WebSocket upgrade, it delegates to
+// ProxyWebSocket instead.
+func HTTP(w http.ResponseWriter, r *http.Request, targetURL string) {
+	parsed, err := url.Parse(targetURL)
+	if err != nil {
+		httpx.Error(w, 502, fmt.Errorf("proxy error: %w", err))
+		return
+	}
+	if parsed.RawQuery == "" {
+		parsed.RawQuery = r.URL.RawQuery
+	}
+	Forward(w, r, parsed, Options{})
+}
+
+// enrichActivityFromHeaders extracts tab ID from upstream response headers
+// and enriches the activity event. This works for all response sizes,
+// unlike body-based enrichment which is limited to small JSON responses.
+// recordProxiedFailureReason carries the reason across the hop: the instance's error
+// producer stamped these headers on the response it serialised, so reading them here
+// keeps the reason coming from the producer — never from re-parsing the body.
+func recordProxiedFailureReason(w http.ResponseWriter, resp *http.Response) {
+	if resp.StatusCode < 400 {
+		return
+	}
+	code := strings.TrimSpace(resp.Header.Get(httpx.FailureCodeHeader))
+	if code == "" {
+		return
+	}
+	httpx.RecordFailureReason(w, code, resp.Header.Get(httpx.FailureMessageHeader))
+}
+
+func enrichActivityFromHeaders(origReq *http.Request, respHeaders http.Header) {
+	tabID := strings.TrimSpace(respHeaders.Get(activity.HeaderPTTabID))
+	if tabID != "" {
+		activity.EnrichRequest(origReq, activity.Update{TabID: tabID})
+	}
+}
+
+func isWebSocketUpgrade(r *http.Request) bool {
+	for _, v := range r.Header["Upgrade"] {
+		if strings.EqualFold(v, "websocket") {
+			return true
+		}
+	}
+	return false
+}
+
+func copyRequestHeaders(dst, src http.Header) {
+	for k, vv := range src {
+		if httpx.IsHopByHopHeader(k) {
+			continue
+		}
+		if _, skip := strippedProxyRequestHeaders[strings.ToLower(k)]; skip {
+			continue
+		}
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
+}

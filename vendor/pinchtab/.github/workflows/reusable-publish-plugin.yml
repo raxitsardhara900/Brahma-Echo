@@ -1,0 +1,127 @@
+name: Reusable / Publish Plugin
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      ref:
+        required: false
+        type: string
+        default: ''
+    secrets:
+      NPM_TOKEN:
+        required: true
+      CLAWHUB_TOKEN:
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Plugin version (e.g. 0.3.0, without v prefix)'
+        required: true
+      ref:
+        description: 'Git ref to publish from. Defaults to the workflow ref.'
+        required: false
+        default: ''
+
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          elif [ -n "$DISPATCH_VERSION" ]; then
+            VERSION="$DISPATCH_VERSION"
+          else
+            VERSION=${GITHUB_REF_NAME#v}
+          fi
+          VERSION=${VERSION#v}
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Update plugin version
+        working-directory: plugin
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          CURRENT=$(node -pe "require('./package.json').version")
+          if [ "$CURRENT" != "$VERSION" ]; then
+            npm version "$VERSION" --no-git-tag-version
+            # Also update openclaw.plugin.json version
+            node -e "
+              const fs = require('fs');
+              const p = JSON.parse(fs.readFileSync('openclaw.plugin.json', 'utf8'));
+              p.version = '$VERSION';
+              fs.writeFileSync('openclaw.plugin.json', JSON.stringify(p, null, 2) + '\n');
+            "
+          else
+            echo "Version already correct: $CURRENT"
+          fi
+
+      - name: Install plugin deps
+        working-directory: plugin
+        run: npm install --ignore-scripts --no-package-lock
+
+      - name: Publish to npm
+        working-directory: plugin
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Install ClawHub CLI
+        run: npm i -g clawhub
+
+      - name: Authenticate with ClawHub
+        run: clawhub login --token "$CLAWHUB_TOKEN" --no-browser
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+
+      - name: Publish to ClawHub
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          CHECKOUT_REF: ${{ inputs.ref || github.ref }}
+        run: |
+          SOURCE_REF="$CHECKOUT_REF"
+          SOURCE_REF="${SOURCE_REF#refs/tags/}"
+          SOURCE_REF="${SOURCE_REF#refs/heads/}"
+          SOURCE_REF="${SOURCE_REF#refs/remotes/}"
+
+          clawhub package publish ./plugin \
+            --family code-plugin \
+            --version "$VERSION" \
+            --changelog "Release v$VERSION" \
+            --tags latest \
+            --source-repo pinchtab/pinchtab \
+            --source-commit "$(git rev-parse HEAD)" \
+            --source-ref "$SOURCE_REF" \
+            --source-path plugin
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          echo "## Plugin Published" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Package: @pinchtab/pinchtab" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Version: $VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "- npm: \`openclaw plugins install @pinchtab/pinchtab\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ClawHub: \`openclaw plugins install clawhub:@pinchtab/pinchtab\`" >> "$GITHUB_STEP_SUMMARY"

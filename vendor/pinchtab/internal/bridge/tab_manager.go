@@ -1,0 +1,368 @@
+package bridge
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	cdp "github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/target"
+	"github.com/chromedp/chromedp"
+	"github.com/pinchtab/pinchtab/internal/config"
+	"github.com/pinchtab/pinchtab/internal/ids"
+)
+
+const (
+	// tabCreateTimeout bounds the CDP target creation for a new tab. Creating a
+	// target is near-instant on a healthy browser, so a long stall means the
+	// browser is unhealthy (e.g. resource exhaustion) — fail fast instead of
+	// waiting tens of seconds.
+	tabCreateTimeout = 10 * time.Second
+	// tabCreateNavTimeout bounds the initial load of a freshly created tab. Kept
+	// well below the full navigate timeout so a wedged renderer (e.g. after an
+	// out-of-memory event) surfaces quickly rather than hanging ~60s.
+	tabCreateNavTimeout = 20 * time.Second
+)
+
+type TabSetupFunc func(ctx context.Context, tabID string) error
+
+type TabManager struct {
+	browserCtx        context.Context
+	config            *config.RuntimeConfig
+	idMgr             *ids.Manager
+	tabs              map[string]*TabEntry
+	accessed          map[string]bool
+	snapshots         map[string]*RefCache
+	frameScope        map[string]FrameScope
+	onTabSetup        TabSetupFunc
+	onAfterClose      func() // optional: invoked after any successful CloseTab
+	dialogMgr         *DialogManager
+	logStore          *ConsoleLogStore
+	routeMgr          *RouteManager
+	onTabRemovedHooks []func(tabID string)
+	netMonitor        *NetworkMonitor
+	currentTab        string // ID of the most recently used tab
+	executor          *TabExecutor
+	guardOnce         sync.Once
+	guardActive       bool
+	mu                sync.RWMutex
+
+	// pendingClicks tracks in-flight click actions that may open a popup.
+	// Keyed by the opener tab's raw CDP target ID. Read by the popup guard
+	// to decide whether to suppress closing the newly created tab.
+	pendingClicks map[target.ID]*pendingClickSlot
+}
+
+func NewTabManager(browserCtx context.Context, cfg *config.RuntimeConfig, idMgr *ids.Manager, logStore *ConsoleLogStore, onTabSetup TabSetupFunc) *TabManager {
+	if idMgr == nil {
+		idMgr = ids.NewManager()
+	}
+	maxParallel := 0
+	if cfg != nil {
+		maxParallel = cfg.MaxParallelTabs
+	}
+	return &TabManager{
+		browserCtx: browserCtx,
+		config:     cfg,
+		idMgr:      idMgr,
+		tabs:       make(map[string]*TabEntry),
+		accessed:   make(map[string]bool),
+		snapshots:  make(map[string]*RefCache),
+		frameScope: make(map[string]FrameScope),
+		onTabSetup: onTabSetup,
+		logStore:   logStore,
+		executor:   NewTabExecutor(maxParallel),
+	}
+}
+
+func (tm *TabManager) SetDialogManager(dm *DialogManager) {
+	tm.dialogMgr = dm
+}
+
+// SetOnAfterClose registers a callback fired whenever a tracked tab is removed
+// from the manager — manual /close, eviction, auto-close lifecycle timer, or
+// Chrome reporting the target gone (e.g. user closing it in a headed window).
+// Used by the parent Bridge to persist session state immediately rather than
+// waiting for graceful shutdown.
+func (tm *TabManager) SetOnAfterClose(fn func()) {
+	tm.onAfterClose = fn
+}
+
+func (tm *TabManager) SetNetworkMonitor(nm *NetworkMonitor) {
+	tm.netMonitor = nm
+}
+
+// SetRouteManager registers the per-bridge RouteManager so the cleanup path
+// can drop a tab's interception state when the tab closes (mirrors the
+// network-monitor / log-store / executor cleanup hooks in tab_cleanup.go).
+func (tm *TabManager) SetRouteManager(rm *RouteManager) {
+	tm.routeMgr = rm
+}
+
+// AddTabRemovedHook registers a per-tab cleanup callback fired alongside the
+// route/log/executor cleanup whenever a tracked tab is removed. Multiple hooks
+// may be registered; each must be best-effort and must not panic.
+func (tm *TabManager) AddTabRemovedHook(fn func(tabID string)) {
+	if fn == nil {
+		return
+	}
+	tm.mu.Lock()
+	tm.onTabRemovedHooks = append(tm.onTabRemovedHooks, fn)
+	tm.mu.Unlock()
+}
+
+// browserExecutorContext returns a context bound to the top-level browser
+// executor, suitable for issuing browser-scoped CDP calls (e.g. target.*).
+// Shared helper used by tab lifecycle, lookup, popup-guard, and cleanup paths.
+func browserExecutorContext(ctx context.Context) (context.Context, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("no browser context available")
+	}
+	c := chromedp.FromContext(ctx)
+	if c == nil || c.Browser == nil {
+		return nil, fmt.Errorf("no browser executor available")
+	}
+	return cdp.WithExecutor(ctx, c.Browser), nil
+}
+
+func (tm *TabManager) CreateTab(url string) (string, context.Context, context.CancelFunc, error) {
+	return tm.createTab(url, "")
+}
+
+func (tm *TabManager) CreateTabInBrowserContext(url, browserContextID string) (string, context.Context, context.CancelFunc, error) {
+	if browserContextID == "" {
+		return "", nil, nil, fmt.Errorf("browser context id required")
+	}
+	return tm.createTab(url, browserContextID)
+}
+
+func (tm *TabManager) createTab(url, browserContextID string) (string, context.Context, context.CancelFunc, error) {
+	if tm == nil {
+		return "", nil, nil, fmt.Errorf("tab manager not initialized")
+	}
+	if tm.browserCtx == nil {
+		return "", nil, nil, fmt.Errorf("no browser context available")
+	}
+
+	if tm.config != nil && tm.config.MaxTabs > 0 {
+		// Count managed tabs for eviction decisions. Using Chrome's target list
+		// would include unmanaged targets (e.g. the initial about:blank tab),
+		// causing premature eviction of managed tabs.
+		tm.mu.RLock()
+		managedCount := len(tm.tabs)
+		tm.mu.RUnlock()
+
+		if managedCount >= tm.config.MaxTabs {
+			switch tm.config.TabEvictionPolicy {
+			case "close_oldest":
+				if evictErr := tm.closeOldestTab(); evictErr != nil {
+					return "", nil, nil, fmt.Errorf("eviction failed: %w", evictErr)
+				}
+			case "reject":
+				return "", nil, nil, &TabLimitError{Current: managedCount, Max: tm.config.MaxTabs}
+			default: // "close_lru" (default)
+				if evictErr := tm.closeLRUTab(); evictErr != nil {
+					return "", nil, nil, fmt.Errorf("eviction failed: %w", evictErr)
+				}
+			}
+		}
+	}
+
+	// target.CreateTarget works for both local and remote (CDP_URL) allocators.
+	// Chromium's explicit focus=false contract opens a normal rendered tab while
+	// leaving the browser window's OS focus unchanged. Do not set background=true:
+	// heavy headed SPAs can suspend that target before DOM/AX reads. newWindow
+	// remains false, so no additional OS window is created.
+	var targetID target.ID
+	createCtx, createCancel := context.WithTimeout(tm.browserCtx, tabCreateTimeout)
+	if err := chromedp.Run(createCtx,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			params := target.CreateTarget("about:blank").WithFocus(false)
+			if browserContextID != "" {
+				params = params.WithBrowserContextID(cdp.BrowserContextID(browserContextID))
+			}
+			var err error
+			targetID, err = params.Do(ctx)
+			return err
+		}),
+	); err != nil {
+		createCancel()
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", nil, nil, fmt.Errorf("create tab: browser did not open a new tab within %s — it may be out of memory or overloaded (close tabs or restart the instance)", tabCreateTimeout)
+		}
+		return "", nil, nil, fmt.Errorf("create target: %w", err)
+	}
+	createCancel()
+
+	ctx, cancel := chromedp.NewContext(tm.browserCtx,
+		chromedp.WithTargetID(targetID),
+	)
+
+	rawCDPID := string(targetID)
+	tabID := tm.idMgr.TabIDFromCDPTarget(rawCDPID)
+
+	if tm.onTabSetup != nil {
+		if err := chromedp.Run(ctx, chromedp.ActionFunc(func(execCtx context.Context) error {
+			return tm.onTabSetup(execCtx, tabID)
+		})); err != nil {
+			cancel()
+			if execCtx, execErr := browserExecutorContext(tm.browserCtx); execErr == nil {
+				_ = target.CloseTarget(targetID).Do(execCtx)
+			}
+			return "", nil, nil, fmt.Errorf("setup new tab: %w", err)
+		}
+	}
+
+	if blockPatterns := tm.tabBlockPatterns(); len(blockPatterns) > 0 {
+		_ = SetResourceBlocking(ctx, blockPatterns)
+	}
+
+	// Start network capture before navigation so CDP events are captured.
+	if tm.netMonitor != nil {
+		if err := tm.netMonitor.StartCapture(ctx, tabID); err != nil {
+			slog.Warn("eager network capture failed", "tab", tabID, "err", err)
+		}
+	}
+
+	if url != "" && url != "about:blank" {
+		navCtx, navCancel := context.WithTimeout(ctx, tabCreateNavTimeout)
+		if err := chromedp.Run(navCtx, chromedp.Navigate(url)); err != nil {
+			navCancel()
+			cancel()
+			if execCtx, execErr := browserExecutorContext(tm.browserCtx); execErr == nil {
+				_ = target.CloseTarget(targetID).Do(execCtx)
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				return "", nil, nil, fmt.Errorf("navigate new tab: page did not load within %s — the browser may be out of memory or overloaded (close tabs or restart the instance)", tabCreateNavTimeout)
+			}
+			return "", nil, nil, fmt.Errorf("navigate: %w", err)
+		}
+		navCancel()
+	}
+
+	now := time.Now()
+
+	if tm.dialogMgr != nil {
+		autoAccept := tm.config != nil && tm.config.DialogAutoAccept
+		ListenDialogEvents(ctx, tabID, tm.dialogMgr, autoAccept)
+		// Page domain must be enabled for Page.javascriptDialogOpening events
+		// to be delivered to ListenTarget callbacks.
+		if err := EnableDialogEvents(ctx); err != nil {
+			slog.Warn("enable dialog events failed", "tabId", tabID, "err", err)
+		}
+	}
+
+	if tm.shouldEagerlyCaptureConsole() {
+		tm.setupConsoleCapture(ctx, rawCDPID)
+	}
+
+	tm.mu.Lock()
+	tm.tabs[tabID] = &TabEntry{
+		Ctx:                   ctx,
+		Cancel:                cancel,
+		CDPID:                 rawCDPID,
+		CreatedAt:             now,
+		LastUsed:              now,
+		ConsoleCaptureEnabled: tm.shouldEagerlyCaptureConsole(),
+	}
+	tm.accessed[tabID] = true
+	tm.currentTab = tabID
+	tm.mu.Unlock()
+
+	tm.startTabPolicyWatcher(tabID, ctx)
+
+	return tabID, ctx, cancel, nil
+}
+
+func (tm *TabManager) CloseTab(tabID string) error {
+	if tm == nil {
+		return fmt.Errorf("tab manager not initialized")
+	}
+	// Guard against closing the last tab to prevent Chrome from exiting
+	targets, err := tm.ListTargets()
+	if err != nil {
+		return fmt.Errorf("list targets: %w", err)
+	}
+	if len(targets) <= 1 {
+		return fmt.Errorf("cannot close the last tab — at least one tab must remain")
+	}
+
+	tm.mu.Lock()
+	entry, tracked := tm.tabs[tabID]
+	tm.mu.Unlock()
+
+	if tracked && entry.Cancel != nil {
+		entry.Cancel()
+	}
+
+	cdpTargetID := tabID
+	if tracked && entry.CDPID != "" {
+		cdpTargetID = entry.CDPID
+	}
+
+	closeCtx, closeCancel := context.WithTimeout(tm.browserCtx, 5*time.Second)
+	defer closeCancel()
+
+	execCtx, execErr := browserExecutorContext(closeCtx)
+	if execErr != nil {
+		if !tracked {
+			return fmt.Errorf("tab %s not found", tabID)
+		}
+		slog.Debug("close target skipped", "tabId", tabID, "cdpId", cdpTargetID, "err", execErr)
+		tm.purgeTrackedTabState(tabID, cdpTargetID)
+		return nil
+	}
+
+	if err := target.CloseTarget(target.ID(cdpTargetID)).Do(execCtx); err != nil {
+		if !tracked {
+			return fmt.Errorf("tab %s not found", tabID)
+		}
+		slog.Debug("close target CDP", "tabId", tabID, "cdpId", cdpTargetID, "err", err)
+	}
+	tm.purgeTrackedTabState(tabID, cdpTargetID)
+	return nil
+}
+
+func (tm *TabManager) FocusTab(tabID string) error {
+	if tm == nil {
+		return fmt.Errorf("tab manager not initialized")
+	}
+	ctx, resolvedID, err := tm.TabContext(tabID)
+	if err != nil {
+		return err
+	}
+
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		return page.BringToFront().Do(ctx)
+	})); err != nil {
+		return fmt.Errorf("bring to front: %w", err)
+	}
+
+	tm.mu.Lock()
+	tm.currentTab = resolvedID
+	if entry, ok := tm.tabs[resolvedID]; ok {
+		entry.LastUsed = time.Now()
+	}
+	tm.mu.Unlock()
+
+	return nil
+}
+
+// Execute runs a task for a tab through the TabExecutor, ensuring per-tab
+// sequential execution with cross-tab parallelism bounded by the semaphore.
+// If the TabExecutor has not been initialized, the task runs directly.
+func (tm *TabManager) Execute(ctx context.Context, tabID string, task func(ctx context.Context) error) error {
+	if tm.executor == nil {
+		return task(ctx)
+	}
+	return tm.executor.Execute(ctx, tabID, task)
+}
+
+// Executor returns the underlying TabExecutor (may be nil).
+func (tm *TabManager) Executor() *TabExecutor {
+	return tm.executor
+}

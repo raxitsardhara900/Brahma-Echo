@@ -1,0 +1,134 @@
+const DefaultTimeout
+func (*Client) EnrichPage(ctx context.Context, url string, opts *PageOptions) (*PageAudit, error)
+func (*Client) EnrichWithBrowser(ctx context.Context, input AuditInput, opts *RunOptions) (*AuditReport, error)
+func Bool(v bool) *bool
+func New(baseURL, token string) *Client
+type A11yFinding struct
+type A11yFinding struct: Count int `json:"count"`
+type A11yFinding struct: Rule string `json:"rule"`
+type A11yFinding struct: Samples []string `json:"samples"`
+type A11yFinding struct: Severity string `json:"severity"`
+type AuditInput struct
+type AuditInput struct: SeaportalResults []byte `json:"seaportalResults,omitempty"`
+type AuditInput struct: SitemapURL string `json:"sitemapUrl,omitempty"`
+type AuditInput struct: URLs []string `json:"urls,omitempty"`
+type AuditOptions struct
+type AuditOptions struct: Concurrency int `json:"concurrency,omitempty"`
+type AuditOptions struct: NetworkMonitor bool `json:"networkMonitor,omitempty"`
+type AuditOptions struct: OutputDir string `json:"outputDir,omitempty"`
+type AuditOptions struct: SampleSize int `json:"sampleSize,omitempty"`
+type AuditOptions struct: Screenshot bool `json:"screenshot,omitempty"`
+type AuditOptions struct: VisualDiff bool `json:"visualDiff,omitempty"`
+type AuditReport struct
+type AuditReport struct: GeneratedAt time.Time `json:"generatedAt"`
+type AuditReport struct: Input AuditReportInput `json:"input"`
+type AuditReport struct: Options AuditOptions `json:"options"`
+type AuditReport struct: Pages []PageResult `json:"pages"`
+type AuditReport struct: Recommendations []string `json:"recommendations,omitempty"`
+type AuditReport struct: SchemaVersion string `json:"schemaVersion"`
+type AuditReport struct: SecurityFindings []SecurityFinding `json:"securityFindings,omitempty"`
+type AuditReport struct: SummaryScore int `json:"summaryScore"`
+type AuditReportInput struct
+type AuditReportInput struct: SeaportalFile string `json:"seaportalFile,omitempty"`
+type AuditReportInput struct: SeaportalFormat string `json:"seaportalFormat,omitempty"`
+type AuditReportInput struct: SitemapURL string `json:"sitemapUrl,omitempty"`
+type AuditReportInput struct: URLs []string `json:"urls,omitempty"`
+type BrokenAsset struct
+type BrokenAsset struct: Error string `json:"error,omitempty"`
+type BrokenAsset struct: ResourceType string `json:"resourceType,omitempty"`
+type BrokenAsset struct: Status int `json:"status,omitempty"`
+type BrokenAsset struct: URL string `json:"url"`
+type BrowserPageData struct
+type BrowserPageData struct: AccessibilityScore int `json:"accessibilityScore,omitempty"`
+type BrowserPageData struct: BrokenAssets []BrokenAsset `json:"brokenAssets,omitempty"`
+type BrowserPageData struct: ConsoleLogs []ConsoleLogEntry `json:"consoleLogs,omitempty"`
+type BrowserPageData struct: FullPageScreenshot bool `json:"fullPageScreenshot,omitempty"`
+type BrowserPageData struct: InteractiveElements []InteractiveElement `json:"interactiveElements,omitempty"`
+type BrowserPageData struct: JSErrors []JSError `json:"jsErrors,omitempty"`
+type BrowserPageData struct: NetworkRequests []NetworkRequest `json:"networkRequests,omitempty"`
+type BrowserPageData struct: ScreenshotPath string `json:"screenshotPath,omitempty"`
+type BrowserPageData struct: TimingMetrics TimingMetrics `json:"timingMetrics"`
+type BrowserPageData struct: VisualDiff *VisualDiffResult `json:"visualDiff,omitempty"`
+type Client struct
+type Client struct: HTTPClient *http.Client
+type ConsoleLogEntry struct
+type ConsoleLogEntry struct: Level string `json:"level"`
+type ConsoleLogEntry struct: Message string `json:"message"`
+type ConsoleLogEntry struct: Source string `json:"source,omitempty"`
+type ConsoleLogEntry struct: Timestamp time.Time `json:"timestamp"`
+type InteractiveElement struct
+type InteractiveElement struct: Disabled bool `json:"disabled,omitempty"`
+type InteractiveElement struct: Label string `json:"label,omitempty"`
+type InteractiveElement struct: Name string `json:"name,omitempty"`
+type InteractiveElement struct: Ref string `json:"ref"`
+type InteractiveElement struct: Role string `json:"role"`
+type InteractiveElement struct: Tag string `json:"tag,omitempty"`
+type JSError struct
+type JSError struct: Column int64 `json:"column,omitempty"`
+type JSError struct: Line int64 `json:"line,omitempty"`
+type JSError struct: Message string `json:"message"`
+type JSError struct: Stack string `json:"stack,omitempty"`
+type JSError struct: Timestamp time.Time `json:"timestamp"`
+type JSError struct: Type string `json:"type,omitempty"`
+type JSError struct: URL string `json:"url,omitempty"`
+type NetworkRequest struct
+type NetworkRequest struct: Duration float64 `json:"duration,omitempty"`
+type NetworkRequest struct: Error string `json:"error,omitempty"`
+type NetworkRequest struct: Failed bool `json:"failed,omitempty"`
+type NetworkRequest struct: Method string `json:"method"`
+type NetworkRequest struct: MimeType string `json:"mimeType,omitempty"`
+type NetworkRequest struct: ResourceType string `json:"resourceType,omitempty"`
+type NetworkRequest struct: Size int64 `json:"size,omitempty"`
+type NetworkRequest struct: StartTime time.Time `json:"startTime"`
+type NetworkRequest struct: Status int `json:"status,omitempty"`
+type NetworkRequest struct: StatusText string `json:"statusText,omitempty"`
+type NetworkRequest struct: URL string `json:"url"`
+type PageAudit struct
+type PageAudit struct: A11yFindings []A11yFinding `json:"a11yFindings,omitempty"`
+type PageAudit struct: BrowserPageData
+type PageAudit struct: Error string `json:"error,omitempty"`
+type PageAudit struct: Screenshot string `json:"screenshot,omitempty"`
+type PageAudit struct: SecurityFindings []SecurityFinding `json:"securityFindings,omitempty"`
+type PageAudit struct: Title string `json:"title,omitempty"`
+type PageAudit struct: URL string `json:"url"`
+type PageOptions struct
+type PageOptions struct: A11y *bool `json:"a11y,omitempty"`
+type PageOptions struct: Console *bool `json:"console,omitempty"`
+type PageOptions struct: Elements *bool `json:"elements,omitempty"`
+type PageOptions struct: Network *bool `json:"network,omitempty"`
+type PageOptions struct: Screenshot *bool `json:"screenshot,omitempty"`
+type PageOptions struct: Security *bool `json:"security,omitempty"`
+type PageOptions struct: Timing *bool `json:"timing,omitempty"`
+type PageResult struct
+type PageResult struct: Browser BrowserPageData `json:"browser"`
+type PageResult struct: Error string `json:"error,omitempty"`
+type PageResult struct: Screenshot string `json:"screenshot,omitempty"`
+type PageResult struct: Seaportal map[string]any `json:"seaportal,omitempty"`
+type PageResult struct: SecurityFindings []SecurityFinding `json:"securityFindings,omitempty"`
+type PageResult struct: StatusCode int `json:"statusCode,omitempty"`
+type PageResult struct: Title string `json:"title,omitempty"`
+type PageResult struct: URL string `json:"url"`
+type RunOptions struct
+type RunOptions struct: Concurrency int
+type RunOptions struct: EnrichAll bool
+type RunOptions struct: Page *PageOptions
+type RunOptions struct: SampleSize int
+type SecurityFinding struct
+type SecurityFinding struct: Detail string `json:"detail"`
+type SecurityFinding struct: RuleID string `json:"ruleId"`
+type SecurityFinding struct: Severity string `json:"severity"`
+type SecurityFinding struct: URL string `json:"url,omitempty"`
+type TimingMetrics struct
+type TimingMetrics struct: CumulativeLayoutShift float64 `json:"cls,omitempty"`
+type TimingMetrics struct: DOMContentLoaded float64 `json:"domContentLoadedMs,omitempty"`
+type TimingMetrics struct: FirstContentfulPaint float64 `json:"fcpMs,omitempty"`
+type TimingMetrics struct: LargestContentfulPaint float64 `json:"lcpMs,omitempty"`
+type TimingMetrics struct: Load float64 `json:"loadMs,omitempty"`
+type TimingMetrics struct: TimeToFirstByte float64 `json:"ttfbMs,omitempty"`
+type VisualDiffResult struct
+type VisualDiffResult struct: BaselinePath string `json:"baselinePath"`
+type VisualDiffResult struct: Changed bool `json:"changed"`
+type VisualDiffResult struct: CurrentPath string `json:"currentPath"`
+type VisualDiffResult struct: DiffPath string `json:"diffPath,omitempty"`
+type VisualDiffResult struct: DiffPixels int `json:"diffPixels"`
+type VisualDiffResult struct: DiffRatio float64 `json:"diffRatio"`

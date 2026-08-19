@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Bot Detection Tests</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #eee; }
+    .pass { color: #4caf50; }
+    .fail { color: #f44336; }
+    .warn { color: #ff9800; }
+    table { border-collapse: collapse; margin: 20px 0; width: 100%; }
+    td, th { border: 1px solid #444; padding: 8px; text-align: left; }
+    th { background: #333; }
+    h2 { color: #888; margin-top: 30px; }
+  </style>
+</head>
+<body>
+  <h1>🤖 Bot Detection Tests</h1>
+  <p>Comprehensive checks based on bot.sannysoft.com and other detection methods</p>
+  
+  <h2>Critical Tests (must pass)</h2>
+  <table id="critical">
+    <tr><th>Test</th><th>Result</th><th>Value</th></tr>
+  </table>
+  
+  <h2>Warning Tests (should pass)</h2>
+  <table id="warnings">
+    <tr><th>Test</th><th>Result</th><th>Value</th></tr>
+  </table>
+  
+  <h2>Info</h2>
+  <table id="info">
+    <tr><th>Property</th><th>Value</th></tr>
+  </table>
+  
+  <script>
+    const results = {};
+    const criticalTable = document.getElementById('critical');
+    const warnTable = document.getElementById('warnings');
+    const infoTable = document.getElementById('info');
+    
+    function addResult(name, passed, value, severity = 'critical') {
+      results[name] = { passed, value, severity };
+      const table = severity === 'critical' ? criticalTable : warnTable;
+      const row = table.insertRow();
+      row.innerHTML = `
+        <td>${name}</td>
+        <td class="${passed ? 'pass' : (severity === 'warn' ? 'warn' : 'fail')}">${passed ? '✓ PASS' : (severity === 'warn' ? '⚠ WARN' : '✗ FAIL')}</td>
+        <td>${String(value).substring(0, 100)}</td>
+      `;
+    }
+    
+    function addInfo(name, value) {
+      const row = infoTable.insertRow();
+      row.innerHTML = `<td>${name}</td><td>${String(value).substring(0, 150)}</td>`;
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════
+    // CRITICAL TESTS - These MUST pass to avoid detection
+    // ═══════════════════════════════════════════════════════════════════
+    
+    // Test: navigator.webdriver value (should be undefined/false, not true)
+    const webdriverValue = navigator.webdriver;
+    addResult('webdriver_value', webdriverValue === undefined || webdriverValue === false, 
+      `navigator.webdriver = ${webdriverValue}`);
+    
+    // Test: webdriver property semantics look native enough.
+    // A native false is acceptable; a truthy webdriver is not.
+    const webdriverExists = 'webdriver' in navigator;
+    addResult('webdriver_in_navigator', !webdriverExists || webdriverValue === false, 
+      `"webdriver" in navigator = ${webdriverExists}, value = ${webdriverValue}`);
+    
+    // Test: Plugins instanceof PluginArray
+    const pluginsValid = navigator.plugins instanceof PluginArray;
+    addResult('plugins_instanceof', pluginsValid, 
+      `navigator.plugins instanceof PluginArray = ${pluginsValid}`);
+    
+    // Test: Plugins has items
+    const hasPlugins = navigator.plugins && navigator.plugins.length > 0;
+    addResult('plugins_present', hasPlugins, 
+      `navigator.plugins.length = ${navigator.plugins?.length || 0}`);
+    
+    // Test: chrome.runtime exists (Chrome extension API)
+    const chromeRuntime = !!(window.chrome && window.chrome.runtime);
+    addResult('chrome_runtime', chromeRuntime, 
+      `window.chrome.runtime = ${chromeRuntime}`);
+    
+    // Test: User agent not headless
+    const ua = navigator.userAgent;
+    const isHeadlessUA = ua.includes('HeadlessChrome') || ua.includes('Headless');
+    addResult('ua_not_headless', !isHeadlessUA, 
+      isHeadlessUA ? 'Contains HeadlessChrome' : 'Normal Chrome UA');
+    
+    // Test: Languages defined
+    const hasLanguages = navigator.languages && navigator.languages.length > 0;
+    addResult('languages', hasLanguages, 
+      `navigator.languages = ${navigator.languages?.join(', ') || 'none'}`);
+    
+    // Test: Permissions API exists and works
+    let permissionsOk = false;
+    try {
+      permissionsOk = navigator.permissions && typeof navigator.permissions.query === 'function';
+    } catch (e) {}
+    addResult('permissions_api', permissionsOk, 
+      permissionsOk ? 'Available' : 'Broken/Missing');
+    
+    // Test: CDP Runtime domain detection (automation leaves traces)
+    const hasCDPTraces = !!(window.cdc_adoQpoasnfa76pfcZLmcfl_Array || 
+                           window.cdc_adoQpoasnfa76pfcZLmcfl_Promise ||
+                           window.__webdriver_script_fn);
+    addResult('no_cdp_traces', !hasCDPTraces, 
+      hasCDPTraces ? 'CDP traces found!' : 'Clean');
+    
+    // Test: navigator.userAgentData exists (Client Hints API - required by Turnstile)
+    const hasUserAgentData = !!(navigator.userAgentData && navigator.userAgentData.brands);
+    addResult('useragentdata_exists', hasUserAgentData, 
+      hasUserAgentData ? `${navigator.userAgentData.brands.length} brands` : 'Missing');
+    
+    // Test: userAgentData.getHighEntropyValues exists
+    const hasHighEntropy = !!(navigator.userAgentData && typeof navigator.userAgentData.getHighEntropyValues === 'function');
+    addResult('useragentdata_highentropy', hasHighEntropy, 
+      hasHighEntropy ? 'Available' : 'Missing');
+    
+    // Test: chrome.runtime.connect exists (required by Cloudflare Turnstile)
+    const hasChromeConnect = !!(window.chrome && window.chrome.runtime && typeof window.chrome.runtime.connect === 'function');
+    addResult('chrome_runtime_connect', hasChromeConnect, 
+      hasChromeConnect ? 'Available' : 'Missing', 'warn');
+    
+    // Test: chrome.csi exists (deprecated legacy surface)
+    const hasChromeCsi = !!(window.chrome && typeof window.chrome.csi === 'function');
+    addResult('chrome_csi', hasChromeCsi, 
+      hasChromeCsi ? 'Available' : 'Missing', 'warn');
+    
+    // Test: chrome.loadTimes exists (deprecated legacy surface)
+    const hasChromeLoadTimes = !!(window.chrome && typeof window.chrome.loadTimes === 'function');
+    addResult('chrome_loadtimes', hasChromeLoadTimes, 
+      hasChromeLoadTimes ? 'Available' : 'Missing', 'warn');
+    
+    // Test: No CDP markers in window object
+    let cdpMarkerCount = 0;
+    for (const prop of Object.getOwnPropertyNames(window)) {
+      if (/^cdc_|^\$cdc_|^__webdriver|^__selenium|^__driver|^\$chrome_|^__puppeteer|^__playwright/.test(prop)) {
+        cdpMarkerCount++;
+      }
+    }
+    addResult('no_cdp_markers', cdpMarkerCount === 0, 
+      cdpMarkerCount === 0 ? 'Clean' : `${cdpMarkerCount} markers found`);
+    
+    // ═══════════════════════════════════════════════════════════════════
+    // WARNING TESTS - Nice to pass, but not always critical
+    // ═══════════════════════════════════════════════════════════════════
+    
+    // Test: Platform matches UA
+    const platform = navigator.platform;
+    let platformMatch = true;
+    if (ua.includes('Linux') && !platform.includes('Linux')) platformMatch = false;
+    if (ua.includes('Macintosh') && platform !== 'MacIntel') platformMatch = false;
+    if (ua.includes('Windows') && !platform.includes('Win')) platformMatch = false;
+    addResult('platform_ua_match', platformMatch, 
+      `UA: ${ua.includes('Linux') ? 'Linux' : ua.includes('Mac') ? 'Mac' : 'Win'}, platform: ${platform}`, 'warn');
+    
+    // Test: WebGL not SwiftShader (CPU renderer = headless)
+    let webglRenderer = 'unknown';
+    try {
+      const canvas = document.createElement('canvas');
+      const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+      if (gl) {
+        const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+        if (dbg) webglRenderer = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+      }
+    } catch (e) {}
+    const isSwiftShader = webglRenderer.toLowerCase().includes('swiftshader');
+    addResult('webgl_not_swiftshader', !isSwiftShader, webglRenderer, 'warn');
+    
+    // Test: Outer dimensions exist (headless may have 0)
+    const hasOuterDims = window.outerWidth > 0 && window.outerHeight > 0;
+    addResult('outer_dimensions', hasOuterDims, 
+      `${window.outerWidth}x${window.outerHeight}`, 'warn');
+    
+    // Test: Hardware concurrency reasonable
+    const cores = navigator.hardwareConcurrency || 0;
+    const coresOk = cores >= 2 && cores <= 64;
+    addResult('hardware_concurrency', coresOk, `${cores} cores`, 'warn');
+    
+    // Test: Device memory exists
+    const deviceMem = navigator.deviceMemory;
+    const hasDeviceMem = deviceMem === undefined || deviceMem === null || deviceMem > 0;
+    addResult('device_memory', hasDeviceMem, deviceMem == null ? 'absent' : `${deviceMem} GB`, 'warn');
+    
+    // Test: Connection RTT exists
+    const rtt = navigator.connection?.rtt;
+    const hasRtt = rtt !== undefined && rtt > 0;
+    addResult('connection_rtt', hasRtt, `${rtt || 0} ms`, 'warn');
+    
+    // Test: Screen dimensions reasonable
+    const screenOk = screen.width > 0 && screen.height > 0 && screen.colorDepth >= 24;
+    addResult('screen_dimensions', screenOk, 
+      `${screen.width}x${screen.height} @ ${screen.colorDepth}bit`, 'warn');
+    
+    // Test: Battery API exists (headless often lacks this)
+    const hasBatteryAPI = typeof navigator.getBattery === 'function';
+    addResult('battery_api', hasBatteryAPI, 
+      hasBatteryAPI ? 'Available' : 'Missing', 'warn');
+    
+    // Test: Notification permission queryable (not denied by default)
+    let notifOk = true;
+    try {
+      // In automation, this might throw or return unexpected values
+      notifOk = Notification.permission !== undefined;
+    } catch (e) { notifOk = false; }
+    addResult('notification_api', notifOk, 
+      `Notification.permission = ${Notification.permission}`, 'warn');
+    
+    // Test: global Function.prototype.toString looks native
+    let toStringOk = true;
+    try {
+      const ownNames = Object.getOwnPropertyNames(Function.prototype.toString);
+      toStringOk = Function.prototype.toString.name === 'toString' &&
+        ownNames.every((name) => name === 'length' || name === 'name');
+    } catch (e) { toStringOk = false; }
+    addResult('function_tostring', toStringOk,
+      toStringOk ? 'Native' : `Modified (${Function.prototype.toString.name})`, 'warn');
+
+    // Test: Intl locale family matches navigator.language
+    let intlLocaleOk = true;
+    let intlDateTimeLocale = '';
+    let intlNumberLocale = '';
+    try {
+      const expected = String(navigator.language || '').toLowerCase();
+      const localeMatchesExpected = (locale) => (
+        locale === expected || locale.startsWith(expected + '-') || expected.startsWith(locale + '-')
+      );
+      const locales = [
+        Intl.DateTimeFormat,
+        Intl.NumberFormat,
+        Intl.Collator,
+        Intl.PluralRules,
+        Intl.RelativeTimeFormat,
+        Intl.ListFormat,
+        Intl.DisplayNames,
+        Intl.Segmenter
+      ].filter((Ctor) => typeof Ctor === 'function').map((Ctor) => {
+        try {
+          const options = Ctor === Intl.DisplayNames
+            ? new Ctor(undefined, { type: 'language' }).resolvedOptions()
+            : new Ctor().resolvedOptions();
+          return String(options.locale || '').toLowerCase();
+        } catch (_) {
+          return '';
+        }
+      }).filter(Boolean);
+      intlDateTimeLocale = locales[0] || '';
+      intlNumberLocale = locales[1] || '';
+      intlLocaleOk = locales.every((locale) => (
+        localeMatchesExpected(locale)
+      ));
+      addResult('intl_datetime_locale_coherent', localeMatchesExpected(intlDateTimeLocale), intlDateTimeLocale || 'none', 'warn');
+      addResult('intl_number_locale_coherent', localeMatchesExpected(intlNumberLocale), intlNumberLocale || 'none', 'warn');
+      addResult('intl_locale_coherent', intlLocaleOk, locales.join(', '), 'warn');
+    } catch (e) {
+      addResult('intl_datetime_locale_coherent', false, String(e), 'warn');
+      addResult('intl_number_locale_coherent', false, String(e), 'warn');
+      addResult('intl_locale_coherent', false, String(e), 'warn');
+    }
+
+    // Test: Error.prepareStackTrace left untouched
+    let prepareStackTraceOk = true;
+    try {
+      prepareStackTraceOk = !Object.getOwnPropertyDescriptor(Error, 'prepareStackTrace');
+    } catch (e) { prepareStackTraceOk = false; }
+    addResult('prepare_stacktrace_native', prepareStackTraceOk,
+      prepareStackTraceOk ? 'Absent' : 'Descriptor present', 'warn');
+    
+    // Test: maxTouchPoints is 0 for desktop
+    const touchPoints = navigator.maxTouchPoints;
+    const touchOk = touchPoints === 0 || touchPoints > 0; // Either is fine, just should exist
+    addResult('max_touch_points', touchOk, `${touchPoints}`, 'warn');
+    
+    // Test: Video codec support (H.264/VP9)
+    let codecSupport = 'unknown';
+    try {
+      const video = document.createElement('video');
+      const h264 = video.canPlayType('video/mp4; codecs="avc1.42E01E"');
+      const vp9 = video.canPlayType('video/webm; codecs="vp9"');
+      codecSupport = `H.264: ${h264}, VP9: ${vp9}`;
+    } catch (e) { codecSupport = 'error'; }
+    const codecsOk = codecSupport.includes('probably');
+    addResult('video_codecs', codecsOk, codecSupport, 'warn');
+    
+    // Test: userAgentData platform matches navigator.platform
+    let uaPlatformMatch = true;
+    if (navigator.userAgentData) {
+      const uadPlatform = navigator.userAgentData.platform;
+      const navPlatform = navigator.platform;
+      // Windows: userAgentData.platform = "Windows", navigator.platform = "Win32"
+      // macOS: userAgentData.platform = "macOS", navigator.platform = "MacIntel"
+      // Linux: userAgentData.platform = "Linux", navigator.platform = "Linux x86_64"
+      if (uadPlatform === 'Windows' && !navPlatform.includes('Win')) uaPlatformMatch = false;
+      if (uadPlatform === 'macOS' && navPlatform !== 'MacIntel') uaPlatformMatch = false;
+      if (uadPlatform === 'Linux' && !navPlatform.includes('Linux')) uaPlatformMatch = false;
+    }
+    addResult('useragentdata_platform_match', uaPlatformMatch, 
+      navigator.userAgentData ? `${navigator.userAgentData.platform} / ${navigator.platform}` : 'N/A', 'warn');
+
+    // Test: userAgentData version aligns with Chrome major in UA
+    let uaVersionMatch = true;
+    if (navigator.userAgentData) {
+      const uaMatch = navigator.userAgent.match(/Chrome\/(\d+)/);
+      const uaMajor = uaMatch ? uaMatch[1] : '';
+      const brands = navigator.userAgentData.brands || [];
+      if (uaMajor) {
+        uaVersionMatch = brands.some((brand) => (
+          (brand.brand === 'Google Chrome' || brand.brand === 'Chromium') &&
+          String(brand.version) === uaMajor
+        ));
+      }
+    }
+    addResult('useragentdata_version_match', uaVersionMatch,
+      navigator.userAgentData ? JSON.stringify(navigator.userAgentData.brands) : 'N/A', 'warn');
+    
+    // ═══════════════════════════════════════════════════════════════════
+    // INFO - Just for debugging
+    // ═══════════════════════════════════════════════════════════════════
+    addInfo('User Agent', navigator.userAgent);
+    addInfo('Platform', navigator.platform);
+    addInfo('Vendor', navigator.vendor);
+    addInfo('Languages', navigator.languages?.join(', '));
+    addInfo('Intl DateTime Locale', intlDateTimeLocale || 'N/A');
+    addInfo('Intl Number Locale', intlNumberLocale || 'N/A');
+    addInfo('Timezone', Intl.DateTimeFormat().resolvedOptions().timeZone);
+    addInfo('Screen', `${screen.width}x${screen.height} @ ${screen.colorDepth}bit`);
+    addInfo('Window Inner', `${window.innerWidth}x${window.innerHeight}`);
+    addInfo('Window Outer', `${window.outerWidth}x${window.outerHeight}`);
+    addInfo('Device Pixel Ratio', window.devicePixelRatio);
+    addInfo('Cookies Enabled', navigator.cookieEnabled);
+    addInfo('Do Not Track', navigator.doNotTrack);
+    addInfo('WebGL Renderer', webglRenderer);
+    addInfo('Max Touch Points', navigator.maxTouchPoints);
+    addInfo('UserAgentData Platform', navigator.userAgentData?.platform || 'N/A');
+    addInfo('UserAgentData Brands', navigator.userAgentData?.brands?.map(b => `${b.brand}/${b.version}`).join(', ') || 'N/A');
+    addInfo('chrome.csi', typeof window.chrome?.csi === 'function' ? 'Present' : 'Missing');
+    addInfo('chrome.loadTimes', typeof window.chrome?.loadTimes === 'function' ? 'Present' : 'Missing');
+    addInfo('chrome.runtime.connect', typeof window.chrome?.runtime?.connect === 'function' ? 'Present' : 'Missing');
+    
+    // ═══════════════════════════════════════════════════════════════════
+    // SCORING
+    // ═══════════════════════════════════════════════════════════════════
+    window.__botDetectResults = results;
+    
+    const criticalTests = Object.values(results).filter(r => r.severity === 'critical');
+    const warnTests = Object.values(results).filter(r => r.severity === 'warn');
+    const criticalPassed = criticalTests.filter(r => r.passed).length;
+    const warnPassed = warnTests.filter(r => r.passed).length;
+    
+    window.__botDetectScore = {
+      critical: criticalPassed,
+      criticalTotal: criticalTests.length,
+      warnings: warnPassed,
+      warningsTotal: warnTests.length,
+      total: criticalPassed + warnPassed,
+      totalTests: criticalTests.length + warnTests.length,
+      passed: criticalPassed === criticalTests.length
+    };
+    
+    // Summary
+    const summaryDiv = document.createElement('div');
+    summaryDiv.style.cssText = 'margin: 20px 0; padding: 20px; border-radius: 8px; font-size: 18px;';
+    summaryDiv.style.background = window.__botDetectScore.passed ? '#1b5e20' : '#b71c1c';
+    summaryDiv.innerHTML = `
+      <strong>${window.__botDetectScore.passed ? '✓ PASSED' : '✗ FAILED'}</strong><br>
+      Critical: ${criticalPassed}/${criticalTests.length} | 
+      Warnings: ${warnPassed}/${warnTests.length}
+    `;
+    document.body.insertBefore(summaryDiv, document.querySelector('h2'));
+  </script>
+</body>
+</html>

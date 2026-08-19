@@ -1,0 +1,214 @@
+package actions
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/pinchtab/pinchtab/internal/cli"
+	"github.com/pinchtab/pinchtab/internal/cli/apiclient"
+	"github.com/pinchtab/pinchtab/internal/fileout"
+	"github.com/pinchtab/pinchtab/internal/readiness"
+	"github.com/spf13/cobra"
+)
+
+func RecordStart(client *http.Client, base, token string, cmd *cobra.Command, args []string) {
+	outFile := args[0]
+
+	ext := strings.ToLower(filepath.Ext(outFile))
+	var format string
+	switch ext {
+	case ".gif":
+		format = "gif"
+	case ".webm":
+		format = "webm"
+	case ".mp4":
+		format = "mp4"
+	default:
+		cli.Fatal("Unsupported format %q — use .gif, .webm, or .mp4", ext)
+	}
+
+	fps, _ := cmd.Flags().GetInt("fps")
+	quality, _ := cmd.Flags().GetInt("quality")
+	scale, _ := cmd.Flags().GetFloat64("scale")
+	tab, _ := cmd.Flags().GetString("tab")
+
+	body := map[string]any{
+		"format":  format,
+		"fps":     fps,
+		"quality": quality,
+		"scale":   scale,
+	}
+	if tab != "" {
+		body["tabId"] = tab
+	}
+
+	apiclient.DoPost(client, base, token, "/record/start", body)
+
+	writeRecordingState(outFile)
+	fmt.Println(cli.StyleStdout(cli.SuccessStyle, fmt.Sprintf("Recording started → %s (%s, %d fps)", outFile, format, fps)))
+}
+
+func RecordStop(client *http.Client, base, token string) {
+	outFile := readRecordingState()
+	autoNamed := outFile == ""
+	if autoNamed {
+		outFile = fmt.Sprintf("recording-%s.gif", time.Now().Format("20060102-150405"))
+	}
+
+	abs, err := filepath.Abs(outFile)
+	if err == nil {
+		outFile = abs
+	}
+
+	// Server encodes to its own recordings directory; we move the file
+	// to the user's desired location after encoding completes.
+	raw := apiclient.DoPostRaw(client, base, token, "/record/stop", map[string]any{})
+	clearRecordingState()
+
+	if raw == nil {
+		return
+	}
+
+	var result struct {
+		Status string `json:"status"`
+		Path   string `json:"path"`
+		Frames int    `json:"frames"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		fmt.Println(cli.StyleStdout(cli.SuccessStyle, "Recording stopped"))
+		return
+	}
+
+	if result.Path == "" {
+		fmt.Println(cli.StyleStdout(cli.SuccessStyle,
+			fmt.Sprintf("Recording stopped (%d frames)", result.Frames)))
+		return
+	}
+
+	fmt.Println(cli.StyleStdout(cli.MutedStyle,
+		fmt.Sprintf("Encoding %d frames...", result.Frames)))
+
+	serverPath := result.Path
+	err = readiness.WaitForRecordEncode(context.Background(), func() ([]byte, error) {
+		raw := apiclient.DoGetRaw(client, base, token, "/record/status", nil)
+		if raw == nil {
+			return nil, errors.New("no status response")
+		}
+		return raw, nil
+	})
+	switch {
+	case errors.Is(err, readiness.ErrNotReady):
+		cli.Fatal("Encoding timed out — file may be at %s", serverPath)
+	case err != nil:
+		cli.Fatal("Encoding failed: %s", strings.TrimPrefix(err.Error(), "encode failed: "))
+	}
+
+	var warning string
+	if raw := apiclient.DoGetRaw(client, base, token, "/record/status", nil); raw != nil {
+		var st struct {
+			Warning string `json:"warning"`
+		}
+		if json.Unmarshal(raw, &st) == nil {
+			warning = st.Warning
+		}
+	}
+
+	// The bytes are already on disk under the server's own name, so this site reserves
+	// rather than writes: the exclusive create claims the name, and the rename replaces
+	// our own placeholder atomically. Reserved here rather than where the name is built
+	// so a run that never gets this far leaves nothing behind, and released below if the
+	// rename fails — an abandoned reservation is an empty file wearing an output's name.
+	if autoNamed {
+		reserved, err := fileout.ReservePath(outFile)
+		if err != nil {
+			cli.Fatal("Failed to reserve %s: %v", outFile, err)
+		}
+		outFile = reserved
+	}
+	if err := os.Rename(serverPath, outFile); err != nil {
+		if autoNamed {
+			_ = os.Remove(outFile)
+		}
+		cli.Fatal("Failed to move %s → %s: %v", serverPath, outFile, err)
+	}
+	fmt.Println(cli.StyleStdout(cli.SuccessStyle,
+		fmt.Sprintf("Saved → %s", outFile)))
+	if warning != "" {
+		fmt.Println(cli.StyleStdout(cli.WarningStyle, "Warning: "+warning))
+	}
+}
+
+func RecordStatus(client *http.Client, base, token string) {
+	raw := apiclient.DoGetRaw(client, base, token, "/record/status", nil)
+	if raw == nil {
+		return
+	}
+
+	var status struct {
+		Active   bool    `json:"active"`
+		Format   string  `json:"format"`
+		Duration float64 `json:"durationSeconds"`
+		Frames   int     `json:"frames"`
+		TabID    string  `json:"tabId"`
+		FPS      int     `json:"fps"`
+	}
+	if err := json.Unmarshal(raw, &status); err != nil {
+		cli.Fatal("Decode failed: %v", err)
+	}
+
+	if !status.Active {
+		fmt.Println(cli.StyleStdout(cli.MutedStyle, "No active recording"))
+		return
+	}
+
+	fmt.Printf("Recording: %s @ %d fps  |  %.1fs  |  %d frames  |  tab %s\n",
+		status.Format, status.FPS, status.Duration, status.Frames, status.TabID)
+}
+
+func recordingStateFile() string {
+	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
+		return dir + "/pinchtab/current-recording"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.TempDir()
+	}
+	return home + "/.local/state/pinchtab/current-recording"
+}
+
+func writeRecordingState(outFile string) {
+	path := recordingStateFile()
+	dir := filepath.Dir(path)
+	_ = os.MkdirAll(dir, 0700)
+	tmp, err := os.CreateTemp(dir, ".current-recording-*")
+	if err != nil {
+		_ = os.WriteFile(path, []byte(outFile+"\n"), 0600)
+		return
+	}
+	_, _ = tmp.WriteString(outFile + "\n")
+	_ = tmp.Chmod(0600)
+	tmpName := tmp.Name()
+	_ = tmp.Close()
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+	}
+}
+
+func readRecordingState() string {
+	data, err := os.ReadFile(recordingStateFile())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func clearRecordingState() {
+	_ = os.Remove(recordingStateFile())
+}

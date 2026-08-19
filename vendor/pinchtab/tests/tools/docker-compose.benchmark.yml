@@ -1,0 +1,10 @@
+services:
+  pinchtab:
+    environment:
+      # Override the base config selection. Both files are mounted into the
+      # container by docker-compose.yml at /fixture-config/. Switching is
+      # purely an env-var change — no rebind, no entrypoint copy. Used by
+      # `./dev bench pinchtab` (the cost-comparison lane) so the
+      # `<untrusted_web_content>` envelope doesn't inflate per-snapshot
+      # token counts.
+      PINCHTAB_CONFIG: /fixture-config/pinchtab-benchmark.json

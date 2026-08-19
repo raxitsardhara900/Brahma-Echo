@@ -1,0 +1,457 @@
+package config
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestSetConfigValue_AllowedDomainsValidation(t *testing.T) {
+	tests := []struct {
+		value   string
+		wantErr bool
+	}{
+		{"example.com", false},
+		{"localhost,127.0.0.1,example.com", false},
+		{"*.example.com", false},
+		{"…,example.com", true},        // literal placeholder pasted from a hint
+		{"127.0.0.1,…", true},          // placeholder anywhere in the list
+		{"has space.com", true},        // malformed
+		{"http://example.com/x", true}, // URL, not a host
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			fc := &FileConfig{}
+			err := SetConfigValue(fc, "security.allowedDomains", tt.value)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SetConfigValue(allowedDomains=%q) error = %v, wantErr %v", tt.value, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestSetConfigValue_ServerFields(t *testing.T) {
+	tests := []struct {
+		path    string
+		value   string
+		check   func(*FileConfig) bool
+		wantErr bool
+	}{
+		{"server.port", "8080", func(fc *FileConfig) bool { return fc.Server.Port == "8080" }, false},
+		{"server.bind", "0.0.0.0", func(fc *FileConfig) bool { return fc.Server.Bind == "0.0.0.0" }, false},
+		{"server.token", "secret", func(fc *FileConfig) bool { return fc.Server.Token == "secret" }, false},
+		{"server.stateDir", "/tmp/state", func(fc *FileConfig) bool { return fc.Server.StateDir == "/tmp/state" }, false},
+		{"server.cookieSecure", "false", func(fc *FileConfig) bool { return fc.Server.CookieSecure != nil && *fc.Server.CookieSecure == false }, false},
+		{"sessions.dashboard.persist", "true", func(fc *FileConfig) bool {
+			return fc.Sessions.Dashboard.Persist != nil && *fc.Sessions.Dashboard.Persist
+		}, false},
+		{"sessions.dashboard.maxLifetimeSec", "604800", func(fc *FileConfig) bool {
+			return fc.Sessions.Dashboard.MaxLifetimeSec != nil && *fc.Sessions.Dashboard.MaxLifetimeSec == 604800
+		}, false},
+		{"observability.activity.enabled", "true", func(fc *FileConfig) bool {
+			return fc.Observability.Activity.Enabled != nil && *fc.Observability.Activity.Enabled
+		}, false},
+		{"observability.activity.events.dashboard", "true", func(fc *FileConfig) bool {
+			return fc.Observability.Activity.Events.Dashboard != nil && *fc.Observability.Activity.Events.Dashboard
+		}, false},
+		{"server.unknown", "value", nil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path+"="+tt.value, func(t *testing.T) {
+			fc := &FileConfig{}
+			err := SetConfigValue(fc, tt.path, tt.value)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SetConfigValue() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && !tt.check(fc) {
+				t.Errorf("SetConfigValue() did not set value correctly")
+			}
+		})
+	}
+}
+
+func TestSetConfigValue_BrowserAndInstanceDefaultsFields(t *testing.T) {
+	tests := []struct {
+		path    string
+		value   string
+		check   func(*FileConfig) bool
+		wantErr bool
+	}{
+		{"browser.provider", "cloak", nil, true},
+		{"browser.version", "144.0.7559.133", func(fc *FileConfig) bool { return fc.Browser.BrowserVersion == "144.0.7559.133" }, false},
+		{"browser.binary", "/tmp/chrome", func(fc *FileConfig) bool { return fc.Browser.BrowserBinary == "/tmp/chrome" }, false},
+		{"browser.cloak.fingerprintSeed", "42069", func(fc *FileConfig) bool { return fc.Browser.Cloak.FingerprintSeed == "42069" }, false},
+		{"browser.cloak.storageQuotaMB", "2048", func(fc *FileConfig) bool { return *fc.Browser.Cloak.StorageQuotaMB == 2048 }, false},
+		{"browser.cloak.disableDefaultStealthArgs", "false", func(fc *FileConfig) bool {
+			return fc.Browser.Cloak.DisableDefaultStealthArgs != nil && !*fc.Browser.Cloak.DisableDefaultStealthArgs
+		}, false},
+		{"browser.cloak.storageQuotaMB", "large", nil, true},
+		{"browser.cloak.disableDefaultStealthArgs", "maybe", nil, true},
+		{"instanceDefaults.mode", "headed", func(fc *FileConfig) bool { return fc.InstanceDefaults.Mode == "headed" }, false},
+		{"instanceDefaults.maxTabs", "50", func(fc *FileConfig) bool { return *fc.InstanceDefaults.MaxTabs == 50 }, false},
+		{"instanceDefaults.stealthLevel", "full", func(fc *FileConfig) bool { return fc.InstanceDefaults.StealthLevel == "full" }, false},
+		{"instanceDefaults.tabEvictionPolicy", "close_lru", func(fc *FileConfig) bool { return fc.InstanceDefaults.TabEvictionPolicy == "close_lru" }, false},
+		{"instanceDefaults.blockAds", "yes", func(fc *FileConfig) bool { return *fc.InstanceDefaults.BlockAds == true }, false},
+		{"profiles.baseDir", "/tmp/profiles", func(fc *FileConfig) bool { return fc.Profiles.BaseDir == "/tmp/profiles" }, false},
+		{"instanceDefaults.noRestore", "maybe", nil, true},
+		{"instanceDefaults.maxTabs", "many", nil, true},
+		{"instanceDefaults.unknown", "value", nil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path+"="+tt.value, func(t *testing.T) {
+			fc := &FileConfig{}
+			err := SetConfigValue(fc, tt.path, tt.value)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SetConfigValue() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && !tt.check(fc) {
+				t.Errorf("SetConfigValue() did not set value correctly")
+			}
+		})
+	}
+}
+
+func TestSetConfigValue_BrowsersFields(t *testing.T) {
+	tests := []struct {
+		path    string
+		value   string
+		check   func(*FileConfig) bool
+		wantErr bool
+	}{
+		{"browsers.default", "cloak", func(fc *FileConfig) bool { return fc.Browsers.Default == "cloak" }, false},
+		{"browsers.available", "chrome, cloak, ghost-chrome", func(fc *FileConfig) bool {
+			return len(fc.Browsers.Available) == 3 &&
+				fc.Browsers.Available[0] == "chrome" &&
+				fc.Browsers.Available[1] == "cloak" &&
+				fc.Browsers.Available[2] == "ghost-chrome"
+		}, false},
+		{"browsers.unknown", "value", nil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path+"="+tt.value, func(t *testing.T) {
+			fc := &FileConfig{}
+			err := SetConfigValue(fc, tt.path, tt.value)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SetConfigValue() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && !tt.check(fc) {
+				t.Errorf("SetConfigValue() did not set value correctly")
+			}
+		})
+	}
+}
+
+func TestSetConfigValue_SecurityFields(t *testing.T) {
+	tests := []struct {
+		path    string
+		value   string
+		check   func(*FileConfig) bool
+		wantErr bool
+	}{
+		{"security.allowEvaluate", "true", func(fc *FileConfig) bool { return *fc.Security.AllowEvaluate == true }, false},
+		{"security.allowClipboard", "true", func(fc *FileConfig) bool {
+			return fc.Security.AllowClipboard != nil && *fc.Security.AllowClipboard
+		}, false},
+		{"security.allowMacro", "1", func(fc *FileConfig) bool { return *fc.Security.AllowMacro == true }, false},
+		{"security.allowScreencast", "false", func(fc *FileConfig) bool { return *fc.Security.AllowScreencast == false }, false},
+		{"security.allowDownload", "on", func(fc *FileConfig) bool { return *fc.Security.AllowDownload == true }, false},
+		{"security.allowCookies", "yes", func(fc *FileConfig) bool { return *fc.Security.AllowCookies == true }, false},
+		{"security.allowStateExport", "true", func(fc *FileConfig) bool { return *fc.Security.AllowStateExport == true }, false},
+		{"security.downloadAllowedDomains", "pinchtab.com, *.pinchtab.com", func(fc *FileConfig) bool {
+			return len(fc.Security.DownloadAllowedDomains) == 2 &&
+				fc.Security.DownloadAllowedDomains[0] == "pinchtab.com" &&
+				fc.Security.DownloadAllowedDomains[1] == "*.pinchtab.com"
+		}, false},
+		{"security.downloadMaxBytes", "33554432", func(fc *FileConfig) bool {
+			return fc.Security.DownloadMaxBytes != nil && *fc.Security.DownloadMaxBytes == 33554432
+		}, false},
+		{"security.allowUpload", "off", func(fc *FileConfig) bool { return *fc.Security.AllowUpload == false }, false},
+		{"security.enableActionGuards", "true", func(fc *FileConfig) bool {
+			return fc.Security.EnableActionGuards != nil && *fc.Security.EnableActionGuards
+		}, false},
+		{"security.uploadMaxRequestBytes", "12582912", func(fc *FileConfig) bool {
+			return fc.Security.UploadMaxRequestBytes != nil && *fc.Security.UploadMaxRequestBytes == 12582912
+		}, false},
+		{"security.uploadMaxFiles", "12", func(fc *FileConfig) bool {
+			return fc.Security.UploadMaxFiles != nil && *fc.Security.UploadMaxFiles == 12
+		}, false},
+		{"security.uploadMaxFileBytes", "6291456", func(fc *FileConfig) bool {
+			return fc.Security.UploadMaxFileBytes != nil && *fc.Security.UploadMaxFileBytes == 6291456
+		}, false},
+		{"security.uploadMaxTotalBytes", "18874368", func(fc *FileConfig) bool {
+			return fc.Security.UploadMaxTotalBytes != nil && *fc.Security.UploadMaxTotalBytes == 18874368
+		}, false},
+		{"security.allowEvaluate", "maybe", nil, true},
+		{"security.allowClipboard", "maybe", nil, true},
+		{"security.enableActionGuards", "maybe", nil, true},
+		{"security.unknown", "true", nil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path+"="+tt.value, func(t *testing.T) {
+			fc := &FileConfig{}
+			err := SetConfigValue(fc, tt.path, tt.value)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SetConfigValue() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && !tt.check(fc) {
+				t.Errorf("SetConfigValue() did not set value correctly")
+			}
+		})
+	}
+}
+
+func TestSetConfigValue_MultiInstanceFields(t *testing.T) {
+	tests := []struct {
+		path    string
+		value   string
+		check   func(*FileConfig) bool
+		wantErr bool
+	}{
+		{"multiInstance.strategy", "explicit", func(fc *FileConfig) bool { return fc.MultiInstance.Strategy == "explicit" }, false},
+		{"multiInstance.allocationPolicy", "round_robin", func(fc *FileConfig) bool { return fc.MultiInstance.AllocationPolicy == "round_robin" }, false},
+		{"multiInstance.instancePortStart", "9900", func(fc *FileConfig) bool { return *fc.MultiInstance.InstancePortStart == 9900 }, false},
+		{"multiInstance.restart.maxRestarts", "12", func(fc *FileConfig) bool {
+			return fc.MultiInstance.Restart.MaxRestarts != nil && *fc.MultiInstance.Restart.MaxRestarts == 12
+		}, false},
+		{"multiInstance.restart.initBackoffSec", "3", func(fc *FileConfig) bool {
+			return fc.MultiInstance.Restart.InitBackoffSec != nil && *fc.MultiInstance.Restart.InitBackoffSec == 3
+		}, false},
+		{"multiInstance.unknown", "value", nil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path+"="+tt.value, func(t *testing.T) {
+			fc := &FileConfig{}
+			err := SetConfigValue(fc, tt.path, tt.value)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SetConfigValue() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && !tt.check(fc) {
+				t.Errorf("SetConfigValue() did not set value correctly")
+			}
+		})
+	}
+}
+
+func TestSetConfigValue_AttachFields(t *testing.T) {
+	tests := []struct {
+		path    string
+		value   string
+		check   func(*FileConfig) bool
+		wantErr bool
+	}{
+		{"security.attach.enabled", "true", func(fc *FileConfig) bool { return fc.Security.Attach.Enabled != nil && *fc.Security.Attach.Enabled }, false},
+		{"security.attach.allowHosts", "localhost, chrome.internal", func(fc *FileConfig) bool {
+			return len(fc.Security.Attach.AllowHosts) == 2 && fc.Security.Attach.AllowHosts[1] == "chrome.internal"
+		}, false},
+		{"security.attach.allowSchemes", "ws,wss", func(fc *FileConfig) bool {
+			return len(fc.Security.Attach.AllowSchemes) == 2 && fc.Security.Attach.AllowSchemes[0] == "ws"
+		}, false},
+		{"security.attach.forwardProxyAuth", "true", func(fc *FileConfig) bool {
+			return fc.Security.Attach.ForwardProxyAuth != nil && *fc.Security.Attach.ForwardProxyAuth
+		}, false},
+		{"security.attach.enabled", "maybe", nil, true},
+		{"security.attach.forwardProxyAuth", "maybe", nil, true},
+		{"security.attach.unknown", "value", nil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path+"="+tt.value, func(t *testing.T) {
+			fc := &FileConfig{}
+			err := SetConfigValue(fc, tt.path, tt.value)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SetConfigValue() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && !tt.check(fc) {
+				t.Errorf("SetConfigValue() did not set value correctly")
+			}
+		})
+	}
+}
+
+func TestSetConfigValue_IDPIFields(t *testing.T) {
+	tests := []struct {
+		path    string
+		value   string
+		check   func(*FileConfig) bool
+		wantErr bool
+	}{
+		{"security.idpi.enabled", "true", func(fc *FileConfig) bool { return fc.Security.IDPI.Enabled }, false},
+		{"security.idpi.strictMode", "false", func(fc *FileConfig) bool { return !fc.Security.IDPI.StrictMode }, false},
+		{"security.idpi.scanContent", "true", func(fc *FileConfig) bool { return fc.Security.IDPI.ScanContent }, false},
+		{"security.idpi.wrapContent", "true", func(fc *FileConfig) bool { return fc.Security.IDPI.WrapContent }, false},
+		{"security.idpi.customPatterns", "ignore previous instructions, exfiltrate data", func(fc *FileConfig) bool {
+			return len(fc.Security.IDPI.CustomPatterns) == 2 && fc.Security.IDPI.CustomPatterns[0] == "ignore previous instructions"
+		}, false},
+		{"security.idpi.enabled", "maybe", nil, true},
+		{"security.idpi.allowedDomains", "localhost, example.com", nil, true},
+		{"security.idpi.unknown", "value", nil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path+"="+tt.value, func(t *testing.T) {
+			fc := &FileConfig{}
+			err := SetConfigValue(fc, tt.path, tt.value)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SetConfigValue() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && !tt.check(fc) {
+				t.Errorf("SetConfigValue() did not set value correctly")
+			}
+		})
+	}
+}
+
+func TestSetConfigValue_SecurityAllowedDomains(t *testing.T) {
+	fc := &FileConfig{}
+	if err := SetConfigValue(fc, "security.allowedDomains", "localhost, example.com"); err != nil {
+		t.Fatalf("SetConfigValue(security.allowedDomains) error = %v", err)
+	}
+	if len(fc.Security.AllowedDomains) != 2 || fc.Security.AllowedDomains[1] != "example.com" {
+		t.Fatalf("security.allowedDomains = %v, want parsed values", fc.Security.AllowedDomains)
+	}
+}
+
+func TestSetConfigValue_TimeoutsFields(t *testing.T) {
+	tests := []struct {
+		path    string
+		value   string
+		check   func(*FileConfig) bool
+		wantErr bool
+	}{
+		{"timeouts.actionSec", "60", func(fc *FileConfig) bool { return fc.Timeouts.ActionSec == 60 }, false},
+		{"timeouts.navigateSec", "120", func(fc *FileConfig) bool { return fc.Timeouts.NavigateSec == 120 }, false},
+		{"timeouts.shutdownSec", "30", func(fc *FileConfig) bool { return fc.Timeouts.ShutdownSec == 30 }, false},
+		{"timeouts.waitNavMs", "2000", func(fc *FileConfig) bool { return fc.Timeouts.WaitNavMs == 2000 }, false},
+		{"timeouts.actionSec", "fast", nil, true},
+		{"timeouts.unknown", "10", nil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path+"="+tt.value, func(t *testing.T) {
+			fc := &FileConfig{}
+			err := SetConfigValue(fc, tt.path, tt.value)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SetConfigValue() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && !tt.check(fc) {
+				t.Errorf("SetConfigValue() did not set value correctly")
+			}
+		})
+	}
+}
+
+func TestSetConfigValue_InvalidPaths(t *testing.T) {
+	tests := []string{
+		"port",          // missing section
+		"",              // empty
+		"unknown.field", // unknown section
+		"server",        // missing field
+		"a.b.c",         // too many parts (we only split on first .)
+	}
+
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			fc := &FileConfig{}
+			err := SetConfigValue(fc, path, "value")
+			if err == nil {
+				t.Errorf("SetConfigValue(%q) should have failed", path)
+			}
+		})
+	}
+}
+
+func TestSetGetBrowserTargetAndProxyFields(t *testing.T) {
+	fc := &FileConfig{}
+	sets := map[string]string{
+		"browser.defaultTarget":                          "cloak-eu",
+		"browser.fallbackOrder":                          "cloak-eu,chrome-local",
+		"browser.proxy.server":                           "http://proxy.example:8080",
+		"browser.proxy.geo.timezone":                     "Europe/Paris",
+		"browser.targets.cloak-eu.provider":              "cloak",
+		"browser.targets.cloak-eu.binary":                "/opt/cloak/bin",
+		"browser.targets.cloak-eu.cloak.fingerprintSeed": "42069",
+		"browser.targets.cloak-eu.proxy.password":        "secret",
+	}
+	for path, value := range sets {
+		if err := SetConfigValue(fc, path, value); err != nil {
+			t.Fatalf("SetConfigValue(%s): %v", path, err)
+		}
+	}
+	for path, want := range sets {
+		got, err := GetConfigValue(fc, path)
+		if err != nil {
+			t.Fatalf("GetConfigValue(%s): %v", path, err)
+		}
+		if got != want {
+			t.Fatalf("GetConfigValue(%s) = %q, want %q", path, got, want)
+		}
+	}
+
+	if err := SetConfigValue(fc, "browser.targets.cloak-eu.bogus", "x"); err == nil {
+		t.Fatal("unknown target field should error")
+	}
+	if err := SetConfigValue(fc, "browser.targets.Bad-Name.binary", "/x"); err == nil {
+		t.Fatal("invalid target name should error")
+	}
+	if _, err := GetConfigValue(fc, "browser.targets.missing.binary"); err == nil {
+		t.Fatal("missing target should error on get")
+	}
+}
+
+func TestSetBrowsersDefaultRejectsUnknownBrowser(t *testing.T) {
+	fc := &FileConfig{}
+	if err := SetConfigValue(fc, "browsers.default", "cloack"); err == nil {
+		t.Fatal("typo'd browsers.default should be rejected")
+	}
+	if err := SetConfigValue(fc, "browsers.default", "Cloak"); err != nil {
+		t.Fatalf("mixed-case known browser should normalize: %v", err)
+	}
+	if fc.Browsers.Default != "cloak" {
+		t.Fatalf("Default = %q, want normalized cloak", fc.Browsers.Default)
+	}
+}
+
+// The refusal has to say more than no: it names the directory the logs go to, the reason
+// the location is not the operator's to choose, and what to set instead. Properties rather
+// than the sentence, so a reword stays free.
+func TestActivityStateDirRefusalCarriesTheReasonAndTheRemedy(t *testing.T) {
+	for _, want := range []string{
+		"observability.activity.stateDir",
+		"<server.stateDir>/activity",
+		"cannot share a log directory",
+		"set server.stateDir",
+	} {
+		if !strings.Contains(ActivityStateDirRefusal, want) {
+			t.Errorf("ActivityStateDirRefusal = %q, want it to carry %q", ActivityStateDirRefusal, want)
+		}
+	}
+}
+
+func TestSetActivityStateDirIsRefusedRatherThanSilentlyIgnored(t *testing.T) {
+	fc := &FileConfig{}
+	err := SetConfigValue(fc, "observability.activity.stateDir", "/tmp/elsewhere")
+	if err == nil {
+		t.Fatal("config set observability.activity.stateDir was accepted; the runtime never reads it")
+	}
+	if err.Error() != ActivityStateDirRefusal {
+		t.Errorf("refusal = %q, want %q", err.Error(), ActivityStateDirRefusal)
+	}
+	if fc.Observability.Activity.StateDir != "" {
+		t.Errorf("StateDir = %q, want the refused value left unwritten", fc.Observability.Activity.StateDir)
+	}
+	if err := SetConfigValue(fc, "observability.activity.retentionDays", "7"); err != nil {
+		t.Fatalf("the neighbouring activity keys must stay settable: %v", err)
+	}
+}

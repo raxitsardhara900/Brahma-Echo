@@ -1,0 +1,53 @@
+package instance_test
+
+import (
+	"testing"
+
+	bridgepkg "github.com/pinchtab/pinchtab/internal/bridge"
+	"github.com/pinchtab/pinchtab/internal/instance"
+)
+
+// FindInstanceByTabID caches every tab it discovers, but tabs also close
+// without passing through the orchestrator proxy — the bridge evicts idle tabs
+// on its own, and pages call window.close(). Those entries are never
+// invalidated, so the cache only ever grows. RefreshAll is the reconciler.
+func TestLocatorRefreshAllDropsTabsClosedOutOfBand(t *testing.T) {
+	launcher := newMockLauncher()
+	repo := instance.NewRepository(launcher)
+	fetcher := newMockFetcher()
+
+	inst, err := launcher.Launch("p", "9001", true)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	repo.Add(inst)
+
+	for _, tabID := range []string{"tab-1", "tab-2", "tab-3"} {
+		fetcher.AddTab("9001", tabID, "https://example.com")
+	}
+
+	// Looking up the last tab caches the ones scanned before it too; the scan
+	// returns early on a match, so everything up to the hit lands in the cache.
+	locator := instance.NewLocator(repo, fetcher)
+	if _, err := locator.FindInstanceByTabID("tab-3"); err != nil {
+		t.Fatalf("FindInstanceByTabID: %v", err)
+	}
+	if got := locator.CacheSize(); got != 3 {
+		t.Fatalf("cache size after discovery = %d, want 3", got)
+	}
+
+	// Two tabs go away without the orchestrator ever seeing a /close.
+	fetcher.tabsByURL["http://localhost:9001"] = []bridgepkg.InstanceTab{
+		{ID: "tab-2", URL: "https://example.com"},
+	}
+
+	if got := locator.CacheSize(); got != 3 {
+		t.Fatalf("cache size = %d, want 3 — entries linger until reconciled", got)
+	}
+
+	locator.RefreshAll()
+
+	if got := locator.CacheSize(); got != 1 {
+		t.Errorf("cache size after RefreshAll = %d, want 1 — closed tabs must be dropped", got)
+	}
+}

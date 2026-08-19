@@ -1,0 +1,41 @@
+import type { ActivityLogEvent, ActivityLogResponse } from "../generated/types";
+
+export type DashboardActivityEvent = ActivityLogEvent & {
+  channel?: string;
+  message?: string;
+  progress?: number;
+  total?: number;
+  // Numeric timestamp (Date.parse of `timestamp`), computed once at
+  // normalization so filtering/sorting never re-parses the string per render.
+  tsMs?: number;
+};
+export type DashboardActivityResponse = ActivityLogResponse;
+
+export interface ActivityFilters {
+  agentId: string;
+  tabId: string;
+  instanceId: string;
+  profileName: string;
+  sessionId: string;
+  action: string;
+  pathPrefix: string;
+  ageSec: string;
+  limit: string;
+}
+
+export interface ActivityQuery {
+  source?: string;
+  requestId?: string;
+  sessionId?: string;
+  agentId?: string;
+  instanceId?: string;
+  profileId?: string;
+  profileName?: string;
+  tabId?: string;
+  action?: string;
+  pathPrefix?: string;
+  since?: string;
+  until?: string;
+  ageSec?: number;
+  limit?: number;
+}

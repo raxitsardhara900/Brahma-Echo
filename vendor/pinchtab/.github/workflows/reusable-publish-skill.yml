@@ -1,0 +1,80 @@
+name: Reusable / Publish Skill
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      ref:
+        required: false
+        type: string
+        default: ''
+    secrets:
+      CLAWHUB_TOKEN:
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Skill version (e.g. 0.2.0, without v prefix)'
+        required: true
+      ref:
+        description: 'Git ref to publish from. Defaults to the workflow ref.'
+        required: false
+        default: ''
+
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish to ClawHub
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          elif [ -n "$DISPATCH_VERSION" ]; then
+            VERSION="$DISPATCH_VERSION"
+          else
+            VERSION=${GITHUB_REF_NAME#v}
+          fi
+          VERSION=${VERSION#v}
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install ClawHub CLI
+        run: npm i -g clawhub
+
+      - name: Authenticate
+        run: clawhub login --token "$CLAWHUB_TOKEN" --no-browser
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+
+      - name: Publish skill
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          ARGS=(
+            skills/pinchtab
+            --owner pinchtab
+            --slug pinchtab
+            --name "Pinchtab"
+            --version "$VERSION"
+            --changelog "Release v$VERSION"
+            --tags latest
+          )
+          clawhub skill publish "${ARGS[@]}"

@@ -274,3 +274,236 @@ def _install_pinchtab_browser_routing() -> None:
 
 _install_computer_settings()
 _install_pinchtab_browser_routing()
+
+# BRAHMA_LOCAL_DEVICE_ROUTING_V2
+# ------------------------------------------------------------
+# 1. Laptop brightness is always local when:
+#    - user explicitly says laptop/screen/display/PC/computer
+#    - OR no smart-home devices are connected
+# 2. Normal browser search/navigation uses Windows default browser.
+# 3. PinchTab remains opt-in via BRAHMA_BROWSER_BACKEND=pinchtab.
+# ------------------------------------------------------------
+
+def _install_local_laptop_routing():
+    import re
+    import webbrowser
+
+    # -----------------------------
+    # Laptop brightness through the
+    # existing local computer tool
+    # -----------------------------
+    try:
+        from smart_home.service import SmartHomeService
+
+        original_smart_home_execute = SmartHomeService.execute_command
+
+        def _local_brightness_execute(self, command):
+            text = str(command or "").strip().lower()
+
+            brightness_words = (
+                "brightness",
+                "brighten",
+                "brighter",
+                "dim",
+                "dimmer",
+                "screen brightness",
+                "display brightness",
+            )
+
+            local_words = (
+                "laptop",
+                "my laptop",
+                "screen",
+                "my screen",
+                "display",
+                "my display",
+                "computer",
+                "my computer",
+                "pc",
+                "my pc",
+                "this pc",
+                "windows",
+            )
+
+            increase_words = (
+                "up",
+                "increase",
+                "raise",
+                "higher",
+                "brighter",
+                "increase brightness",
+                "brightness up",
+                "badhao",
+                "badhado",
+            )
+
+            decrease_words = (
+                "down",
+                "decrease",
+                "lower",
+                "reduce",
+                "dimmer",
+                "dim",
+                "low",
+                "brightness down",
+                "brightness low",
+                "kam",
+                "ghata",
+                "ghatao",
+            )
+
+            if not any(word in text for word in brightness_words):
+                return None
+
+            try:
+                has_smart_devices = self.device_count() > 0
+            except Exception:
+                has_smart_devices = False
+
+            explicitly_local = any(word in text for word in local_words)
+
+            # When there are no smart-home devices, generic brightness
+            # commands should control this laptop instead of failing.
+            if not explicitly_local and has_smart_devices:
+                return None
+
+            from actions.computer_settings import computer_settings
+
+            number_match = re.search(r"(?<!\d)(\d{1,3})(?:\s*%)?(?!\d)", text)
+
+            if number_match:
+                value = max(0, min(100, int(number_match.group(1))))
+                result = computer_settings({
+                    "action": "brightness_set",
+                    "value": value,
+                    "description": text,
+                })
+            elif any(word in text for word in decrease_words):
+                result = computer_settings({
+                    "action": "brightness_down",
+                    "description": text,
+                })
+            elif any(word in text for word in increase_words):
+                result = computer_settings({
+                    "action": "brightness_up",
+                    "description": text,
+                })
+            else:
+                return {
+                    "action": "laptop_brightness",
+                    "targets": ["This PC"],
+                    "detail": "Please specify brightness percentage or say increase/decrease.",
+                    "count": 1,
+                }
+
+            return {
+                "action": "laptop_brightness",
+                "targets": ["This PC"],
+                "detail": str(result),
+                "count": 1,
+            }
+
+        SmartHomeService.execute_command = _local_brightness_execute
+
+    except Exception as _exc:
+        print(f"[LocalBrightness] Smart-home bridge patch skipped: {_exc}")
+
+    # -----------------------------
+    # System default browser
+    # -----------------------------
+    try:
+        import actions.browser_control as browser_module
+
+        original_browser_control = browser_module.browser_control
+
+        def _system_default_browser_control(
+            parameters=None,
+            response=None,
+            player=None,
+            session_memory=None,
+        ):
+            params = dict(parameters or {})
+            action = str(params.get("action") or "").strip().lower()
+
+            backend = os.environ.get(
+                "BRAHMA_BROWSER_BACKEND",
+                "system",
+            ).strip().lower()
+
+            # PinchTab is explicitly requested -> leave it to the
+            # existing PinchTab router.
+            if backend == "pinchtab":
+                return original_browser_control(
+                    params,
+                    response=response,
+                    player=player,
+                    session_memory=session_memory,
+                )
+
+            if action in {"search"}:
+                query = str(params.get("query") or "").strip()
+
+                if not query:
+                    return "Search query is empty."
+
+                from urllib.parse import quote_plus
+
+                url = (
+                    "https://www.google.com/search?q="
+                    + quote_plus(query)
+                )
+
+                webbrowser.open(url, new=2)
+
+                message = (
+                    f"Opened search in system default browser: "
+                    f"{query}"
+                )
+
+                if player:
+                    player.write_log(
+                        "[Browser] " + message
+                    )
+
+                return message
+
+            if action in {"go_to", "navigate"}:
+                url = str(params.get("url") or "").strip()
+
+                if not url:
+                    return "URL is empty."
+
+                if not url.startswith(("http://", "https://")):
+                    url = "https://" + url
+
+                webbrowser.open(url, new=2)
+
+                message = (
+                    "Opened URL in system default browser: "
+                    + url
+                )
+
+                if player:
+                    player.write_log(
+                        "[Browser] " + message
+                    )
+
+                return message
+
+            return original_browser_control(
+                params,
+                response=response,
+                player=player,
+                session_memory=session_memory,
+            )
+
+        browser_module.browser_control = (
+            _system_default_browser_control
+        )
+
+    except Exception as _exc:
+        print(f"[DefaultBrowser] Patch skipped: {_exc}")
+
+
+_install_local_laptop_routing()
+

@@ -1,9 +1,4 @@
-"""Brahma Echo adapter for a local PinchTab HTTP server.
-
-This adapter keeps the PinchTab runtime isolated from the Python app. It can
-start the bundled Go server when its binary exists, then exposes a small set of
-high-value browser operations for Brahma Echo.
-"""
+"""Brahma Echo adapter for a local PinchTab HTTP server."""
 from __future__ import annotations
 
 import json
@@ -15,7 +10,6 @@ from typing import Any
 
 import requests
 
-
 BASE_DIR = Path(__file__).resolve().parent.parent
 PINCHTAB_ROOT = BASE_DIR / "vendor" / "pinchtab"
 PINCHTAB_BIN = PINCHTAB_ROOT / "bin" / ("pinchtab.exe" if os.name == "nt" else "pinchtab")
@@ -23,21 +17,13 @@ PINCHTAB_URL = os.environ.get("PINCHTAB_URL", "http://127.0.0.1:9867").rstrip("/
 
 
 def _load_config_token() -> str:
-    """Load PinchTab's generated server token when env var is not set.
-
-    PinchTab 0.8+ generates a token in %APPDATA%/pinchtab/config.json.
-    The Python adapter must use that same token or every authenticated
-    request appears as a false 'server not running' (HTTP 401).
-    """
     env_token = os.environ.get("PINCHTAB_TOKEN", "").strip()
     if env_token:
         return env_token
-
     if os.name == "nt":
         config_path = Path(os.environ.get("APPDATA", "")) / "pinchtab" / "config.json"
     else:
         config_path = Path.home() / ".config" / "pinchtab" / "config.json"
-
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
         return str((data.get("server") or {}).get("token") or "").strip()
@@ -46,6 +32,12 @@ def _load_config_token() -> str:
 
 
 PINCHTAB_TOKEN = _load_config_token()
+
+
+def _refresh_token() -> str:
+    global PINCHTAB_TOKEN
+    PINCHTAB_TOKEN = _load_config_token()
+    return PINCHTAB_TOKEN
 
 
 def _headers() -> dict[str, str]:
@@ -57,33 +49,22 @@ def _headers() -> dict[str, str]:
 
 def _request(method: str, path: str, **kwargs: Any) -> requests.Response:
     timeout = kwargs.pop("timeout", 30)
-    return requests.request(
-        method,
-        PINCHTAB_URL + path,
-        headers=_headers(),
-        timeout=timeout,
-        **kwargs,
-    )
+    return requests.request(method, PINCHTAB_URL + path, headers=_headers(), timeout=timeout, **kwargs)
 
 
 def health() -> dict[str, Any]:
     r = _request("GET", "/health", timeout=5)
+    if r.status_code == 401:
+        _refresh_token()
+        r = _request("GET", "/health", timeout=5)
     r.raise_for_status()
     return r.json()
 
 
 def is_running() -> bool:
     try:
-        return health() is not None
-    except requests.HTTPError as exc:
-        # 401 means the server is reachable but credentials are wrong.
-        # It must not trigger another PinchTab server launch.
-        if exc.response is not None and exc.response.status_code == 401:
-            raise RuntimeError(
-                "PinchTab server is reachable but authentication failed. "
-                "Refresh PINCHTAB_TOKEN from %APPDATA%\\pinchtab\\config.json."
-            ) from exc
-        return False
+        health()
+        return True
     except Exception:
         return False
 
@@ -94,18 +75,14 @@ def start_server(wait_seconds: float = 15.0) -> None:
         return
     except requests.HTTPError as exc:
         if exc.response is not None and exc.response.status_code == 401:
-            # The server is already running; do not spawn duplicate servers.
-            global PINCHTAB_TOKEN
-            PINCHTAB_TOKEN = _load_config_token()
+            _refresh_token()
             health()
             return
     except Exception:
         pass
 
     if not PINCHTAB_BIN.exists():
-        raise FileNotFoundError(
-            f"PinchTab binary not found at {PINCHTAB_BIN}. Run scripts\\setup_pinchtab.ps1 first."
-        )
+        raise FileNotFoundError(f"PinchTab binary not found at {PINCHTAB_BIN}. Run scripts\\setup_pinchtab.ps1 first.")
 
     creationflags = 0
     if os.name == "nt":
@@ -121,32 +98,26 @@ def start_server(wait_seconds: float = 15.0) -> None:
 
     deadline = time.time() + wait_seconds
     last_error: Exception | None = None
-
     while time.time() < deadline:
-        # Refresh token on every retry because PinchTab may generate it at first startup.
-        global PINCHTAB_TOKEN
-        PINCHTAB_TOKEN = _load_config_token()
+        _refresh_token()
         try:
             health()
             return
         except Exception as exc:
             last_error = exc
             time.sleep(0.4)
-
     raise RuntimeError(f"PinchTab server did not become ready: {last_error}")
 
 
 def _ensure_server() -> None:
     try:
         health()
-        return
     except requests.HTTPError as exc:
         if exc.response is not None and exc.response.status_code == 401:
-            global PINCHTAB_TOKEN
-            PINCHTAB_TOKEN = _load_config_token()
+            _refresh_token()
             health()
-            return
-        raise
+        else:
+            raise
     except Exception:
         start_server()
 
@@ -159,6 +130,9 @@ def navigate(url: str, tab_id: str | None = None, new_tab: bool = False) -> dict
     if new_tab:
         payload["newTab"] = True
     r = _request("POST", "/navigate", json=payload)
+    if r.status_code == 401:
+        _refresh_token()
+        r = _request("POST", "/navigate", json=payload)
     r.raise_for_status()
     return r.json() if r.content else {}
 
@@ -166,6 +140,9 @@ def navigate(url: str, tab_id: str | None = None, new_tab: bool = False) -> dict
 def tabs() -> list[dict[str, Any]]:
     _ensure_server()
     r = _request("GET", "/tabs")
+    if r.status_code == 401:
+        _refresh_token()
+        r = _request("GET", "/tabs")
     r.raise_for_status()
     data = r.json()
     return data if isinstance(data, list) else data.get("tabs", [])
@@ -173,14 +150,12 @@ def tabs() -> list[dict[str, Any]]:
 
 def snapshot(tab_id: str | None = None, interactive: bool = True, compact: bool = True) -> Any:
     _ensure_server()
-    path = "/snapshot"
-    if tab_id:
-        path = f"/tabs/{tab_id}/snapshot"
-    params = {
-        "interactive": str(interactive).lower(),
-        "compact": str(compact).lower(),
-    }
+    path = "/snapshot" if not tab_id else f"/tabs/{tab_id}/snapshot"
+    params = {"interactive": str(interactive).lower(), "compact": str(compact).lower()}
     r = _request("GET", path, params=params)
+    if r.status_code == 401:
+        _refresh_token()
+        r = _request("GET", path, params=params)
     r.raise_for_status()
     try:
         return r.json()
@@ -192,6 +167,9 @@ def text(tab_id: str | None = None, mode: str = "readability") -> str:
     _ensure_server()
     path = "/text" if not tab_id else f"/tabs/{tab_id}/text"
     r = _request("GET", path, params={"mode": mode})
+    if r.status_code == 401:
+        _refresh_token()
+        r = _request("GET", path, params={"mode": mode})
     r.raise_for_status()
     try:
         data = r.json()
@@ -203,7 +181,11 @@ def text(tab_id: str | None = None, mode: str = "readability") -> str:
 def action(tab_id: str, kind: str, **params: Any) -> Any:
     _ensure_server()
     payload = {"kind": kind, **params}
-    r = _request("POST", f"/tabs/{tab_id}/action", json=payload)
+    path = f"/tabs/{tab_id}/action"
+    r = _request("POST", path, json=payload)
+    if r.status_code == 401:
+        _refresh_token()
+        r = _request("POST", path, json=payload)
     r.raise_for_status()
     try:
         return r.json()
@@ -227,6 +209,9 @@ def screenshot(tab_id: str | None = None, output: Path | None = None) -> bytes:
     _ensure_server()
     path = "/screenshot" if not tab_id else f"/tabs/{tab_id}/screenshot"
     r = _request("GET", path, params={"raw": "true"})
+    if r.status_code == 401:
+        _refresh_token()
+        r = _request("GET", path, params={"raw": "true"})
     r.raise_for_status()
     data = r.content
     if output:
@@ -236,15 +221,10 @@ def screenshot(tab_id: str | None = None, output: Path | None = None) -> bytes:
 
 
 def browser_control(parameters: dict[str, Any]) -> str:
-    """Natural wrapper for Brahma's browser tool dispatch."""
     action_name = str(parameters.get("action", "")).lower().strip()
     tab_id = parameters.get("tab_id") or parameters.get("tabId")
-
     if action_name in {"go_to", "navigate"}:
-        return json.dumps(
-            navigate(str(parameters.get("url", "")), tab_id=tab_id),
-            ensure_ascii=False,
-        )
+        return json.dumps(navigate(str(parameters.get("url", "")), tab_id=tab_id), ensure_ascii=False)
     if action_name in {"tabs", "list_tabs"}:
         return json.dumps(tabs(), ensure_ascii=False)
     if action_name == "snapshot":
@@ -252,24 +232,11 @@ def browser_control(parameters: dict[str, Any]) -> str:
     if action_name == "get_text":
         return text(tab_id)
     if action_name == "click":
-        return json.dumps(
-            click(str(tab_id), str(parameters.get("ref", ""))),
-            ensure_ascii=False,
-        )
+        return json.dumps(click(str(tab_id), str(parameters.get("ref", ""))), ensure_ascii=False)
     if action_name == "fill":
-        return json.dumps(
-            fill(
-                str(tab_id),
-                str(parameters.get("selector", "")),
-                str(parameters.get("text", "")),
-            ),
-            ensure_ascii=False,
-        )
+        return json.dumps(fill(str(tab_id), str(parameters.get("selector", "")), str(parameters.get("text", ""))), ensure_ascii=False)
     if action_name == "press":
-        return json.dumps(
-            press(str(tab_id), str(parameters.get("key", "Enter"))),
-            ensure_ascii=False,
-        )
+        return json.dumps(press(str(tab_id), str(parameters.get("key", "Enter"))), ensure_ascii=False)
     if action_name == "screenshot":
         out = parameters.get("output")
         screenshot(tab_id, Path(out) if out else None)

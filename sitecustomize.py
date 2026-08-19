@@ -1,14 +1,18 @@
-"""Startup hook that makes deterministic computer controls local and fast.
+"""Startup hooks for Brahma Echo.
 
-Python automatically imports sitecustomize when this project directory is on sys.path.
-The hook patches actions.computer_settings.computer_settings before main.py imports it.
+- Keeps deterministic local computer controls fast.
+- Makes PinchTab the primary browser backend while retaining Playwright fallback.
 """
 
+import importlib.util
+import os
 import re
 import platform
+import sys
+from pathlib import Path
 
 
-def _patch():
+def _patch_computer_settings():
     try:
         import actions.computer_settings as cs
     except Exception:
@@ -36,18 +40,16 @@ def _patch():
         endpoint.SetMasterVolumeLevelScalar(float(percent) / 100.0, None)
         actual = round(endpoint.GetMasterVolumeLevelScalar() * 100)
         if actual != int(percent):
-            # One final exact write removes rounding/drift on some endpoints.
             endpoint.SetMasterVolumeLevelScalar(float(percent) / 100.0, None)
             actual = round(endpoint.GetMasterVolumeLevelScalar() * 100)
         return actual
 
-    def _local(parameters, player):
+    def _local(parameters, player=None):
         params = dict(parameters or {})
         action = str(params.get("action") or "").strip().lower().replace("-", "_").replace(" ", "_")
         description = str(params.get("description") or "").strip().lower()
         value = params.get("value")
 
-        # Natural-language volume commands are handled without another AI call.
         if not action and description:
             if any(w in description for w in ("mute", "silence")) and "unmute" not in description:
                 action = "mute"
@@ -116,10 +118,29 @@ def _patch():
             direct[action]()
             return f"Done: {action}."
 
-        # Delegate all other commands to the existing implementation unchanged.
         return original(parameters=params, player=player)
 
     cs.computer_settings = _local
 
 
-_patch()
+def _install_pinchtab_browser_router():
+    if os.environ.get("BRAHMA_PINCHTAB", "1").strip().lower() in {"0", "false", "off", "no"}:
+        return
+    try:
+        base = Path(__file__).resolve().parent
+        router_path = base / "actions" / "pinchtab_browser_router.py"
+        if not router_path.exists():
+            return
+        spec = importlib.util.spec_from_file_location("actions._pinchtab_browser_router", router_path)
+        if spec is None or spec.loader is None:
+            return
+        router = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(router)
+        sys.modules["actions.browser_control"] = router
+        print("[PinchTab] Browser router installed (PinchTab primary, Playwright fallback)")
+    except Exception as exc:
+        print(f"[PinchTab] Browser router unavailable; using original Playwright controller: {exc}")
+
+
+_patch_computer_settings()
+_install_pinchtab_browser_router()

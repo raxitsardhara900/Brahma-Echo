@@ -141,18 +141,19 @@ def _install_computer_settings() -> None:
                 return "Please specify brightness from 0 to 100 percent."
             if platform.system() == "Windows":
                 actual = _windows_brightness_set(target)
-            else:
-                return original({**params, "action": "brightness_up"}, response=response, player=player, session_memory=session_memory)
-            if player:
-                player.write_log(f"[Settings] laptop_brightness_set {actual}%")
-            return f"Laptop brightness set to {actual}%."
+                if player:
+                    player.write_log(f"[Settings] laptop_brightness_set {actual}%")
+                return f"Laptop brightness set to {actual}%."
+            return original({**params, "action": "brightness_up"}, response=response, player=player, session_memory=session_memory)
 
         if not action and description:
             if any(x in description for x in ("brightness", "screen brightness", "display brightness", "laptop brightness")):
                 target = _parse_percent(description)
                 if target is not None and platform.system() == "Windows":
                     actual = _windows_brightness_set(target)
-                    return f"Laptop brightness set to {actual}%".
+                    if player:
+                        player.write_log(f"[Settings] laptop_brightness_set {actual}%")
+                    return f"Laptop brightness set to {actual}%"
                 if any(x in description for x in ("up", "increase", "raise", "higher", "brighter")):
                     action = "brightness_up"
                 elif any(x in description for x in ("down", "decrease", "lower", "reduce", "dimmer")):
@@ -231,7 +232,7 @@ def _install_computer_settings() -> None:
 
 
 def _install_pinchtab_browser_routing() -> None:
-    """PinchTab is opt-in; normal browser actions use system default browser."""
+    """PinchTab is opt-in; normal browser actions use the system default browser."""
     try:
         import actions.browser_control as bc
         from actions import pinchtab_client as pt

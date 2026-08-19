@@ -162,13 +162,13 @@ def _install_computer_settings() -> None:
         if action in {"brightness_up", "brightness_increase"}:
             if platform.system() == "Windows":
                 actual = _windows_brightness_step(+10)
-                return f"Laptop brightness increased to {actual}%."
+                return f"Laptop brightness increased to {actual}%"
             return original({**params, "action": "brightness_up"}, response=response, player=player, session_memory=session_memory)
 
         if action in {"brightness_down", "brightness_decrease"}:
             if platform.system() == "Windows":
                 actual = _windows_brightness_step(-10)
-                return f"Laptop brightness decreased to {actual}%."
+                return f"Laptop brightness decreased to {actual}%"
             return original({**params, "action": "brightness_down"}, response=response, player=player, session_memory=session_memory)
 
         if not action and description:
@@ -288,106 +288,48 @@ def _install_local_laptop_routing():
     import re
     import webbrowser
 
-    # -----------------------------
-    # Laptop brightness through the
-    # existing local computer tool
-    # -----------------------------
     try:
         from smart_home.service import SmartHomeService
 
-        original_smart_home_execute = SmartHomeService.execute_command
-
         def _local_brightness_execute(self, command):
             text = str(command or "").strip().lower()
-
             brightness_words = (
-                "brightness",
-                "brighten",
-                "brighter",
-                "dim",
-                "dimmer",
-                "screen brightness",
-                "display brightness",
+                "brightness", "brighten", "brighter", "dim", "dimmer",
+                "screen brightness", "display brightness",
             )
-
             local_words = (
-                "laptop",
-                "my laptop",
-                "screen",
-                "my screen",
-                "display",
-                "my display",
-                "computer",
-                "my computer",
-                "pc",
-                "my pc",
-                "this pc",
-                "windows",
+                "laptop", "my laptop", "screen", "my screen", "display",
+                "my display", "computer", "my computer", "pc", "my pc",
+                "this pc", "windows",
             )
-
             increase_words = (
-                "up",
-                "increase",
-                "raise",
-                "higher",
-                "brighter",
-                "increase brightness",
-                "brightness up",
-                "badhao",
-                "badhado",
+                "up", "increase", "raise", "higher", "brighter",
+                "increase brightness", "brightness up", "badhao", "badhado",
             )
-
             decrease_words = (
-                "down",
-                "decrease",
-                "lower",
-                "reduce",
-                "dimmer",
-                "dim",
-                "low",
-                "brightness down",
-                "brightness low",
-                "kam",
-                "ghata",
-                "ghatao",
+                "down", "decrease", "lower", "reduce", "dimmer", "dim",
+                "low", "brightness down", "brightness low", "kam", "ghata", "ghatao",
             )
 
             if not any(word in text for word in brightness_words):
                 return None
-
             try:
                 has_smart_devices = self.device_count() > 0
             except Exception:
                 has_smart_devices = False
-
             explicitly_local = any(word in text for word in local_words)
-
-            # When there are no smart-home devices, generic brightness
-            # commands should control this laptop instead of failing.
             if not explicitly_local and has_smart_devices:
                 return None
 
             from actions.computer_settings import computer_settings
-
             number_match = re.search(r"(?<!\d)(\d{1,3})(?:\s*%)?(?!\d)", text)
-
             if number_match:
                 value = max(0, min(100, int(number_match.group(1))))
-                result = computer_settings({
-                    "action": "brightness_set",
-                    "value": value,
-                    "description": text,
-                })
+                result = computer_settings({"action": "brightness_set", "value": value, "description": text})
             elif any(word in text for word in decrease_words):
-                result = computer_settings({
-                    "action": "brightness_down",
-                    "description": text,
-                })
+                result = computer_settings({"action": "brightness_down", "description": text})
             elif any(word in text for word in increase_words):
-                result = computer_settings({
-                    "action": "brightness_up",
-                    "description": text,
-                })
+                result = computer_settings({"action": "brightness_up", "description": text})
             else:
                 return {
                     "action": "laptop_brightness",
@@ -404,103 +346,54 @@ def _install_local_laptop_routing():
             }
 
         SmartHomeService.execute_command = _local_brightness_execute
-
     except Exception as _exc:
         print(f"[LocalBrightness] Smart-home bridge patch skipped: {_exc}")
 
-    # -----------------------------
-    # System default browser
-    # -----------------------------
     try:
         import actions.browser_control as browser_module
-
         original_browser_control = browser_module.browser_control
 
-        def _system_default_browser_control(
-            parameters=None,
-            response=None,
-            player=None,
-            session_memory=None,
-        ):
+        def _system_default_browser_control(parameters=None, response=None, player=None, session_memory=None):
             params = dict(parameters or {})
             action = str(params.get("action") or "").strip().lower()
+            backend = os.environ.get("BRAHMA_BROWSER_BACKEND", "system").strip().lower()
 
-            backend = os.environ.get(
-                "BRAHMA_BROWSER_BACKEND",
-                "system",
-            ).strip().lower()
-
-            # PinchTab is explicitly requested -> leave it to the
-            # existing PinchTab router.
             if backend == "pinchtab":
-                return original_browser_control(
-                    params,
-                    response=response,
-                    player=player,
-                    session_memory=session_memory,
-                )
+                return original_browser_control(params, response=response, player=player, session_memory=session_memory)
 
-            if action in {"search"}:
+            if action == "search":
                 query = str(params.get("query") or "").strip()
-
                 if not query:
                     return "Search query is empty."
-
                 from urllib.parse import quote_plus
-
-                url = (
-                    "https://www.google.com/search?q="
-                    + quote_plus(query)
-                )
-
-                _brahma_open_default_browser_once(url)
-
+                url = "https://www.google.com/search?q=" + quote_plus(query)
+                opened = _brahma_open_default_browser_once(url)
                 message = (
-                    f"Opened search in system default browser: "
-                    f"{query}"
+                    f"Opened search in system default browser: {query}"
+                    if opened else f"Already open in system default browser: {query}"
                 )
-
                 if player:
-                    player.write_log(
-                        "[Browser] " + message
-                    )
-
+                    player.write_log("[Browser] " + message)
                 return message
 
             if action in {"go_to", "navigate"}:
                 url = str(params.get("url") or "").strip()
-
                 if not url:
                     return "URL is empty."
-
                 if not url.startswith(("http://", "https://")):
                     url = "https://" + url
-
-                _brahma_open_default_browser_once(url)
-
+                opened = _brahma_open_default_browser_once(url)
                 message = (
-                    "Opened URL in system default browser: "
-                    + url
+                    f"Opened URL in system default browser: {url}"
+                    if opened else f"Already open in system default browser: {url}"
                 )
-
                 if player:
-                    player.write_log(
-                        "[Browser] " + message
-                    )
-
+                    player.write_log("[Browser] " + message)
                 return message
 
-            return original_browser_control(
-                params,
-                response=response,
-                player=player,
-                session_memory=session_memory,
-            )
+            return original_browser_control(params, response=response, player=player, session_memory=session_memory)
 
-        browser_module.browser_control = (
-            _system_default_browser_control
-        )
-
+        browser_module.browser_control = _system_default_browser_control
     except Exception as _exc:
         print(f"[DefaultBrowser] Patch skipped: {_exc}")
 
@@ -524,12 +417,10 @@ def _install_sbc_brightness_backend():
         def _sbc_brightness_get():
             try:
                 value = sbc.get_brightness(display=0)
-
                 if isinstance(value, (list, tuple)):
                     if not value:
                         return None
                     value = value[0]
-
                 return int(round(float(value)))
             except Exception as exc:
                 print(f"[Brightness] SBC get failed: {exc}")
@@ -537,109 +428,192 @@ def _install_sbc_brightness_backend():
 
         def _sbc_brightness_set(percent):
             percent = max(0, min(100, int(percent)))
-
-            result = sbc.set_brightness(
-                percent,
-                display=0
-            )
-
-            # Verify the actual laptop display value.
+            sbc.set_brightness(percent, display=0)
             actual = _sbc_brightness_get()
-
             if actual is None:
                 return percent
-
             return actual
 
         def _sbc_brightness_step(delta):
             current = _sbc_brightness_get()
-
             if current is None:
                 current = 50
-
-            target = max(
-                0,
-                min(100, current + int(delta))
-            )
-
+            target = max(0, min(100, current + int(delta)))
             return _sbc_brightness_set(target)
 
         _windows_brightness_get = _sbc_brightness_get
         _windows_brightness_set = _sbc_brightness_set
         _windows_brightness_step = _sbc_brightness_step
-
         print("[Brightness] SBC laptop backend ACTIVE.")
         print("[Brightness] Target display: 0")
-
     except Exception as exc:
-        print(
-            f"[Brightness] SBC unavailable, "
-            f"keeping WMI backend: {exc}"
-        )
+        print(f"[Brightness] SBC unavailable, keeping WMI backend: {exc}")
 
 
 _install_sbc_brightness_backend()
 
-
-
-# BRAHMA_GLOBAL_BROWSER_DEDUP_V1
-# ------------------------------------------------------------
-# Prevent duplicate default-browser tabs for ANY URL opened by
-# Brahma during the current Brahma process/session.
-# ------------------------------------------------------------
+# ============================================================
+# Existing session-level duplicate protection is kept as a fallback.
+# The function below is intentionally redefined afterwards so actual
+# browser-tab enumeration runs first for the user's real browser.
+# ============================================================
 
 _BRAHMA_OPENED_DEFAULT_BROWSER_URLS = set()
 
-def _brahma_normalize_browser_url(url: str) -> str:
-    value = str(url or "").strip()
 
+def _browser_title_patterns():
+    prog_id = ""
+    try:
+        prog_id = _get_default_browser_id()
+    except Exception:
+        pass
+    patterns = []
+    if "edge" in prog_id:
+        patterns.append(r".*Microsoft Edge$")
+    if "chrome" in prog_id:
+        patterns.append(r".*Google Chrome$")
+    if "brave" in prog_id:
+        patterns.append(r".*Brave$")
+    if "opera" in prog_id:
+        patterns.append(r".*Opera(?: GX)?$")
+    if "vivaldi" in prog_id:
+        patterns.append(r".*Vivaldi$")
+    if "firefox" in prog_id or "mozilla" in prog_id:
+        patterns.append(r".*Mozilla Firefox$")
+    if not patterns:
+        patterns = [
+            r".*Google Chrome$", r".*Microsoft Edge$", r".*Brave$",
+            r".*Opera(?: GX)?$", r".*Vivaldi$", r".*Mozilla Firefox$",
+        ]
+    return patterns
+
+
+def _normalize_browser_url(url: str) -> str:
+    from urllib.parse import urlsplit, urlunsplit
+    value = str(url or "").strip()
     if not value:
         return ""
-
     if not value.startswith(("http://", "https://")):
         value = "https://" + value
+    try:
+        parts = urlsplit(value)
+        return urlunsplit((
+            parts.scheme.lower(),
+            parts.netloc.lower(),
+            (parts.path or "/").rstrip("/") or "/",
+            parts.query,
+            "",
+        ))
+    except Exception:
+        return value.rstrip("/").lower()
 
-    return value.rstrip("/").lower()
+
+def _enumerate_default_browser_tabs():
+    if platform.system() != "Windows":
+        return []
+
+    try:
+        from pywinauto import Desktop
+    except Exception as exc:
+        print(f"[BrowserEnum] pywinauto unavailable: {exc}")
+        return []
+
+    desktop = Desktop(backend="uia")
+    windows = []
+    for pattern in _browser_title_patterns():
+        try:
+            windows.extend(desktop.windows(title_re=pattern, control_type="Pane"))
+        except Exception:
+            pass
+
+    results = []
+    seen = set()
+    for window in windows:
+        try:
+            handle = getattr(window, "handle", id(window))
+            if handle in seen:
+                continue
+            seen.add(handle)
+
+            address_bars = window.descendants(title="Address and search bar", control_type="Edit")
+            if not address_bars:
+                continue
+            address_bar = address_bars[0]
+            try:
+                original_url = _normalize_browser_url(address_bar.get_value())
+            except Exception:
+                original_url = ""
+
+            tabs = window.descendants(control_type="TabItem")
+            for index, tab in enumerate(tabs, 1):
+                try:
+                    tab.click_input()
+                    url = _normalize_browser_url(address_bar.get_value())
+                    results.append({
+                        "window": window,
+                        "tab": tab,
+                        "index": index,
+                        "title": tab.window_text(),
+                        "url": url,
+                    })
+                except Exception:
+                    continue
+
+            if original_url:
+                for item in results:
+                    if item["window"] is window and item["url"] == original_url:
+                        try:
+                            item["tab"].click_input()
+                        except Exception:
+                            pass
+                        break
+        except Exception:
+            continue
+
+    return results
+
+
+def _focus_existing_browser_url(target_url: str) -> bool:
+    target = _normalize_browser_url(target_url)
+    if not target:
+        return False
+
+    tabs = _enumerate_default_browser_tabs()
+    for item in tabs:
+        if item.get("url") == target:
+            try:
+                item["tab"].click_input()
+            except Exception:
+                pass
+            print(f"[BrowserEnum] Existing tab found and focused: {target_url}")
+            return True
+    return False
 
 
 def _brahma_open_default_browser_once(url: str) -> bool:
     import webbrowser
 
-    normalized = _brahma_normalize_browser_url(url)
-
+    normalized = _normalize_browser_url(url)
     if not normalized:
         return False
 
-    if normalized in _BRAHMA_OPENED_DEFAULT_BROWSER_URLS:
-        print(
-            f"[Browser] Duplicate prevented: {url}"
-        )
-        return False
+    try:
+        if _focus_existing_browser_url(url):
+            _BRAHMA_OPENED_DEFAULT_BROWSER_URLS.add(normalized)
+            return False
+    except Exception as exc:
+        print(f"[BrowserEnum] Enumeration failed; using session cache: {exc}")
 
-    _BRAHMA_OPENED_DEFAULT_BROWSER_URLS.add(
-        normalized
-    )
+    if normalized in _BRAHMA_OPENED_DEFAULT_BROWSER_URLS:
+        print(f"[Browser] Duplicate prevented: {url}")
+        return False
 
     try:
-        # new=0 asks the OS/default browser to reuse the
-        # existing browser window/session when possible.
         webbrowser.open(url, new=0)
-
-        print(
-            f"[Browser] Opened in default browser: {url}"
-        )
-
+        _BRAHMA_OPENED_DEFAULT_BROWSER_URLS.add(normalized)
+        print(f"[Browser] Opened in default browser: {url}")
         return True
-
     except Exception as exc:
-        # Do not permanently block retry after a failed launch.
-        _BRAHMA_OPENED_DEFAULT_BROWSER_URLS.discard(
-            normalized
-        )
-
-        print(
-            f"[Browser] Default browser open failed: {exc}"
-        )
-
+        _BRAHMA_OPENED_DEFAULT_BROWSER_URLS.discard(normalized)
+        print(f"[Browser] Default browser open failed: {exc}")
         return False
-

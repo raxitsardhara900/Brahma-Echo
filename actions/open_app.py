@@ -6,6 +6,7 @@ import subprocess
 import platform
 import shutil
 import re
+import webbrowser
 
 try:
     import psutil
@@ -23,7 +24,7 @@ _APP_ALIASES = {
     "visual studio code": {"Windows": "code",                   "Darwin": "Visual Studio Code",  "Linux": "code"},
     "discord":            {"Windows": "Discord",                "Darwin": "Discord",             "Linux": "discord"},
     "telegram":           {"Windows": "Telegram",               "Darwin": "Telegram",            "Linux": "telegram"},
-    "instagram":          {"Windows": "Instagram",              "Darwin": "Instagram",           "Linux": "instagram"},
+    "instagram":          {"Windows": "Instagram",               "Darwin": "Instagram",           "Linux": "instagram"},
     "tiktok":             {"Windows": "TikTok",                 "Darwin": "TikTok",              "Linux": "tiktok"},
     "notepad":            {"Windows": "notepad.exe",            "Darwin": "TextEdit",            "Linux": "gedit"},
     "calculator":         {"Windows": "calc.exe",               "Darwin": "Calculator",          "Linux": "gnome-calculator"},
@@ -46,15 +47,13 @@ _APP_ALIASES = {
     "brave":              {"Windows": "brave",                  "Darwin": "Brave Browser",       "Linux": "brave-browser"},
     "obsidian":           {"Windows": "Obsidian",               "Darwin": "Obsidian",             "Linux": "obsidian"},
     "notion":             {"Windows": "Notion",                 "Darwin": "Notion",              "Linux": "notion"},
-    "blender":            {"Windows": "blender",                "Darwin": "Blender",             "Linux": "blender"},
+    "blender":             {"Windows": "blender",                "Darwin": "Blender",             "Linux": "blender"},
     "capcut":             {"Windows": "CapCut",                 "Darwin": "CapCut",              "Linux": "capcut"},
     "postman":            {"Windows": "Postman",                "Darwin": "Postman",             "Linux": "postman"},
     "figma":              {"Windows": "Figma",                  "Darwin": "Figma",               "Linux": "figma"},
 }
 
 # Website names belong to the shared browser controller, not the OS app launcher.
-# This keeps "Open YouTube" and the following click/type/press commands in the
-# same browser session instead of opening a second unrelated browser window.
 _WEBSITE_URLS = {
     "youtube": "https://www.youtube.com",
     "youtube.com": "https://www.youtube.com",
@@ -94,7 +93,6 @@ def _looks_like_url(value: str) -> bool:
         return False
     if value.startswith(("http://", "https://")):
         return True
-    # A plain domain such as example.com should also be treated as a website.
     return bool(re.fullmatch(r"[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/.*)?", value))
 
 
@@ -113,6 +111,9 @@ def _open_in_shared_browser(raw: str, player=None) -> str | None:
     url = _website_url(raw)
     if not url:
         return None
+
+    # Primary path: use the project's shared browser controller so follow-up
+    # browser commands can reuse the same session when that backend is healthy.
     try:
         from actions.browser_control import browser_control
         result = browser_control(
@@ -121,15 +122,29 @@ def _open_in_shared_browser(raw: str, player=None) -> str | None:
             player=player,
             session_memory=None,
         )
-        return result or f"Opened {raw} in the default browser."
+        if result:
+            return result
     except Exception as exc:
-        print(f"[open_app] Browser routing failed for {raw}: {exc}")
-        return None
+        print(f"[open_app] Shared browser failed for {raw}: {exc}")
+
+    # Hard fallback: Windows/OS default browser. This must work even when
+    # PinchTab is unavailable or its local server is not running.
+    try:
+        opened = webbrowser.open(url, new=0, autoraise=True)
+        if opened:
+            print(f"[open_app] Default browser fallback opened: {url}")
+            if player:
+                player.write_log(f"[open_app] default-browser fallback: {url}")
+            return f"Opened {raw} in the system default browser."
+    except Exception as exc:
+        print(f"[open_app] Default browser fallback failed for {raw}: {exc}")
+
+    return None
 
 
 def _normalize(raw: str) -> str:
     system = platform.system()
-    key    = raw.lower().strip()
+    key = raw.lower().strip()
     if key in _APP_ALIASES:
         return _APP_ALIASES[key].get(system, raw)
     for alias_key, os_map in _APP_ALIASES.items():
@@ -167,7 +182,7 @@ def _launch_windows(app_name: str) -> bool:
         time.sleep(3.0)
         return True
     except Exception as e:
-        print(f"[open_app] ⚠️ Windows launch failed: {e}")
+        print(f"[open_app] Windows launch failed: {e}")
         return False
 
 
@@ -198,7 +213,7 @@ def _launch_macos(app_name: str) -> bool:
         time.sleep(1.5)
         return True
     except Exception as e:
-        print(f"[open_app] ⚠️ macOS Spotlight failed: {e}")
+        print(f"[open_app] macOS Spotlight failed: {e}")
         return False
 
 
@@ -234,8 +249,8 @@ def _launch_linux(app_name: str) -> bool:
 
 _OS_LAUNCHERS = {
     "Windows": _launch_windows,
-    "Darwin":  _launch_macos,
-    "Linux":   _launch_linux,
+    "Darwin": _launch_macos,
+    "Linux": _launch_linux,
 }
 
 
@@ -250,31 +265,26 @@ def open_app(
     if not app_name:
         return "Please specify which application to open, sir."
 
-    # Website names/URLs are intentionally routed into the shared browser
-    # controller. This prevents the next browser-control command from opening
-    # a different Playwright browser session.
     browser_result = _open_in_shared_browser(app_name, player=player)
     if browser_result is not None:
-        print(f"[open_app] 🌐 Website routed to shared browser: {app_name}")
+        print(f"[open_app] Website opened: {app_name}")
         if player:
             player.write_log(f"[open_app] browser: {app_name}")
         return browser_result
 
-    system   = platform.system()
+    system = platform.system()
     launcher = _OS_LAUNCHERS.get(system)
-
     if launcher is None:
         return f"Unsupported OS: {system}"
 
     normalized = _normalize(app_name)
-    print(f"[open_app] 🚀 Launching: {app_name} → {normalized} ({system})")
+    print(f"[open_app] Launching: {app_name} -> {normalized} ({system})")
 
     if player:
         player.write_log(f"[open_app] {app_name}")
 
     try:
         success = launcher(normalized)
-
         if success:
             return f"Opened {app_name} successfully, sir."
 
@@ -283,11 +293,7 @@ def open_app(
             if success:
                 return f"Opened {app_name} successfully, sir."
 
-        return (
-            f"I tried to open {app_name}, sir, but couldn't confirm it launched. "
-            f"It may still be loading or might not be installed."
-        )
-
+        return f"I tried to open {app_name}, sir, but couldn't confirm it launched."
     except Exception as e:
-        print(f"[open_app] ❌ {e}")
+        print(f"[open_app] Failed: {e}")
         return f"Failed to open {app_name}, sir: {e}"

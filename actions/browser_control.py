@@ -424,16 +424,27 @@ def _ensure_started():
 
 
 def _dispatch_pinchtab(parameters: dict) -> str | None:
-    """Send semantic browser operations to PinchTab when explicitly selected."""
-    if os.environ.get("BRAHMA_BROWSER_BACKEND", "system").strip().lower() != "pinchtab":
-        return None
+    """Route browser interaction to PinchTab by default; direct navigation remains system-browser unless PinchTab is explicitly selected."""
     action = str((parameters or {}).get("action", "")).lower().strip()
+    forced_pinchtab = os.environ.get("BRAHMA_BROWSER_BACKEND", "").strip().lower() == "pinchtab"
+
     supported = {
         "go_to", "navigate", "search", "click", "fill", "smart_click", "smart_type",
         "snapshot", "get_text", "press", "screenshot", "list_tabs", "tabs", "health", "server_start"
     }
     if action not in supported:
         return None
+
+    # Browser actions are now PinchTab-first. This prevents search/click/type/press
+    # requests from silently falling back to a separate Playwright Chrome session.
+    # Plain navigation keeps the system/default browser unless PinchTab is explicitly selected.
+    interaction_actions = {
+        "search", "click", "fill", "smart_click", "smart_type", "press",
+        "snapshot", "get_text", "screenshot", "list_tabs", "tabs", "health", "server_start"
+    }
+    if action not in interaction_actions and not forced_pinchtab:
+        return None
+
     try:
         from actions import pinchtab_client as pt
         result = pt.browser_control(parameters)
@@ -445,7 +456,7 @@ def _dispatch_pinchtab(parameters: dict) -> str | None:
 
 
 def browser_control(parameters: dict, response=None, player=None, session_memory=None) -> str:
-    """Browser controller; PinchTab is primary only when BRAHMA_BROWSER_BACKEND=pinchtab."""
+    """Browser controller; PinchTab handles interaction/search by default and can own navigation when selected."""
     routed = _dispatch_pinchtab(parameters or {})
     if routed is not None:
         if player:

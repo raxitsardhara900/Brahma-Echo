@@ -1,18 +1,44 @@
-"""Startup hooks for Brahma Echo.
+"""Fast local routing for deterministic computer controls.
 
-- Keeps deterministic local computer controls fast.
-- Makes PinchTab the primary browser backend while retaining Playwright fallback.
+This hook normalizes model-generated computer_settings actions before they reach
+legacy intent detection. It prevents retries for direct volume/brightness/window
+commands and guarantees exact Windows volume percentages via pycaw.
 """
+from __future__ import annotations
 
-import importlib.util
-import os
-import re
 import platform
-import sys
-from pathlib import Path
+import re
 
 
-def _patch_computer_settings():
+def _parse_percent(value) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", ".")
+    match = re.search(r"(?<!\d)(\d{1,3})(?:\s*%|\b)", text)
+    if not match:
+        return None
+    return max(0, min(100, int(match.group(1))))
+
+
+def _set_windows_volume(percent: int) -> int:
+    from ctypes import POINTER, cast
+    from comtypes import CLSCTX_ALL
+    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+
+    device = AudioUtilities.GetSpeakers()
+    endpoint = device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+    volume = cast(endpoint, POINTER(IAudioEndpointVolume))
+    volume.SetMasterVolumeLevelScalar(percent / 100.0, None)
+    actual = round(volume.GetMasterVolumeLevelScalar() * 100)
+
+    # Endpoints that quantize can land one point away. Retry the exact scalar.
+    if actual != percent:
+        volume.SetMasterVolumeLevelScalar(percent / 100.0, None)
+        actual = round(volume.GetMasterVolumeLevelScalar() * 100)
+    return actual
+
+
+def _install():
     try:
         import actions.computer_settings as cs
     except Exception:
@@ -20,50 +46,12 @@ def _patch_computer_settings():
 
     original = cs.computer_settings
 
-    def _percent(value):
-        if value is None:
-            return None
-        text = str(value).strip().replace(",", ".")
-        m = re.search(r"(?<!\d)(\d{1,3})(?:\s*%|\b)", text)
-        if not m:
-            return None
-        return max(0, min(100, int(m.group(1))))
-
-    def _set_windows_volume(percent):
-        from ctypes import POINTER, cast
-        from comtypes import CLSCTX_ALL
-        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-
-        device = AudioUtilities.GetSpeakers()
-        interface = device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        endpoint = cast(interface, POINTER(IAudioEndpointVolume))
-        endpoint.SetMasterVolumeLevelScalar(float(percent) / 100.0, None)
-        actual = round(endpoint.GetMasterVolumeLevelScalar() * 100)
-        if actual != int(percent):
-            endpoint.SetMasterVolumeLevelScalar(float(percent) / 100.0, None)
-            actual = round(endpoint.GetMasterVolumeLevelScalar() * 100)
-        return actual
-
-    def _local(parameters, player=None):
+    def fast_computer_settings(parameters=None, response=None, player=None, session_memory=None):
         params = dict(parameters or {})
-        action = str(params.get("action") or "").strip().lower().replace("-", "_").replace(" ", "_")
+        raw_action = str(params.get("action") or "").strip().lower()
+        action = raw_action.replace("-", "_").replace(" ", "_")
         description = str(params.get("description") or "").strip().lower()
         value = params.get("value")
-
-        if not action and description:
-            if any(w in description for w in ("mute", "silence")) and "unmute" not in description:
-                action = "mute"
-            elif any(w in description for w in ("unmute", "sound on", "audio on")):
-                action = "unmute"
-            elif any(w in description for w in ("volume", "sound", "audio")):
-                if any(w in description for w in ("up", "increase", "raise", "higher", "louder")):
-                    action = "volume_up"
-                elif any(w in description for w in ("down", "decrease", "lower", "reduce", "quieter")):
-                    action = "volume_down"
-                else:
-                    value = _percent(description)
-                    if value is not None:
-                        action = "volume_set"
 
         aliases = {
             "volume": "volume_set",
@@ -72,10 +60,13 @@ def _patch_computer_settings():
             "setvolume": "volume_set",
             "volume_level": "volume_set",
         }
-        action = aliases.get(action, action)
+        if action in aliases:
+            action = aliases[action]
 
         if action == "volume_set":
-            target = _percent(value if value is not None else description)
+            target = _parse_percent(value)
+            if target is None:
+                target = _parse_percent(description)
             if target is None:
                 return "Please specify a volume from 0 to 100 percent."
             if platform.system() == "Windows":
@@ -86,6 +77,29 @@ def _patch_computer_settings():
             if player:
                 player.write_log(f"[Settings] volume_set {actual}%")
             return f"Volume set to {actual}%."
+
+        if not action and description:
+            if "unmute" in description or "sound on" in description or "audio on" in description:
+                action = "unmute"
+            elif "mute" in description or "silence" in description:
+                action = "mute"
+            elif any(x in description for x in ("volume", "sound", "audio")):
+                if any(x in description for x in ("up", "increase", "raise", "higher", "louder")):
+                    action = "volume_up"
+                elif any(x in description for x in ("down", "decrease", "lower", "reduce", "quieter")):
+                    action = "volume_down"
+                else:
+                    target = _parse_percent(description)
+                    if target is not None:
+                        action = "volume_set"
+                        if platform.system() == "Windows":
+                            actual = _set_windows_volume(target)
+                        else:
+                            cs.volume_set(target)
+                            actual = target
+                        if player:
+                            player.write_log(f"[Settings] volume_set {actual}%")
+                        return f"Volume set to {actual}%."
 
         direct = {
             "volume_up": cs.volume_up,
@@ -114,33 +128,14 @@ def _patch_computer_settings():
             "file_explorer": cs.open_file_explorer,
             "open_run": cs.open_run,
         }
-        if action in direct:
-            direct[action]()
+        func = direct.get(action)
+        if func:
+            func()
             return f"Done: {action}."
 
-        return original(parameters=params, player=player)
+        return original(params, response=response, player=player, session_memory=session_memory)
 
-    cs.computer_settings = _local
-
-
-def _install_pinchtab_browser_router():
-    if os.environ.get("BRAHMA_PINCHTAB", "1").strip().lower() in {"0", "false", "off", "no"}:
-        return
-    try:
-        base = Path(__file__).resolve().parent
-        router_path = base / "actions" / "pinchtab_browser_router.py"
-        if not router_path.exists():
-            return
-        spec = importlib.util.spec_from_file_location("actions._pinchtab_browser_router", router_path)
-        if spec is None or spec.loader is None:
-            return
-        router = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(router)
-        sys.modules["actions.browser_control"] = router
-        print("[PinchTab] Browser router installed (PinchTab primary, Playwright fallback)")
-    except Exception as exc:
-        print(f"[PinchTab] Browser router unavailable; using original Playwright controller: {exc}")
+    cs.computer_settings = fast_computer_settings
 
 
-_patch_computer_settings()
-_install_pinchtab_browser_router()
+_install()

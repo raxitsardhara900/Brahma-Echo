@@ -1,14 +1,17 @@
-"""Fast local routing for deterministic computer controls.
+"""Fast local routing for deterministic desktop controls.
 
-This hook normalizes model-generated computer_settings actions before they reach
-legacy intent detection. It also routes supported browser actions through the
-PinchTab adapter first, with the existing browser_control implementation kept
-as the fallback.
+Defaults:
+- Windows volume/brightness are handled locally on this PC.
+- Normal browser navigation uses the operating-system default browser.
+- PinchTab remains available as an explicit opt-in backend via
+  BRAHMA_BROWSER_BACKEND=pinchtab, with Playwright fallback.
 """
 from __future__ import annotations
 
+import os
 import platform
 import re
+import subprocess
 
 
 def _parse_percent(value) -> int | None:
@@ -31,11 +34,54 @@ def _set_windows_volume(percent: int) -> int:
     volume = cast(endpoint, POINTER(IAudioEndpointVolume))
     volume.SetMasterVolumeLevelScalar(percent / 100.0, None)
     actual = round(volume.GetMasterVolumeLevelScalar() * 100)
-
     if actual != percent:
         volume.SetMasterVolumeLevelScalar(percent / 100.0, None)
         actual = round(volume.GetMasterVolumeLevelScalar() * 100)
     return actual
+
+
+def _windows_brightness_get() -> int | None:
+    script = (
+        "$b=(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness)"
+        ".CurrentBrightness; Write-Output $b"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", script],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip().splitlines()[-1])
+    except Exception:
+        pass
+    return None
+
+
+def _windows_brightness_set(percent: int) -> int:
+    percent = max(0, min(100, int(percent)))
+    script = (
+        "$m=Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods;"
+        "$m.WmiSetBrightness(1," + str(percent) + ");"
+        "$b=(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness).CurrentBrightness;"
+        "Write-Output $b"
+    )
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command", script],
+        capture_output=True, text=True, timeout=5
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Windows brightness API failed")
+    try:
+        return int(result.stdout.strip().splitlines()[-1])
+    except Exception:
+        return percent
+
+
+def _windows_brightness_step(delta: int) -> int:
+    current = _windows_brightness_get()
+    if current is None:
+        current = 50
+    return _windows_brightness_set(current + int(delta))
 
 
 def _install_computer_settings() -> None:
@@ -53,15 +99,24 @@ def _install_computer_settings() -> None:
         description = str(params.get("description") or "").strip().lower()
         value = params.get("value")
 
-        aliases = {
+        volume_aliases = {
             "volume": "volume_set",
             "set": "volume_set",
             "set_volume": "volume_set",
             "setvolume": "volume_set",
             "volume_level": "volume_set",
         }
-        if action in aliases:
-            action = aliases[action]
+        brightness_aliases = {
+            "brightness": "brightness_set",
+            "set_brightness": "brightness_set",
+            "setbrightness": "brightness_set",
+            "screen_brightness": "brightness_set",
+            "screenbrightness": "brightness_set",
+        }
+        if action in volume_aliases:
+            action = volume_aliases[action]
+        elif action in brightness_aliases:
+            action = brightness_aliases[action]
 
         if action == "volume_set":
             target = _parse_percent(value)
@@ -77,6 +132,43 @@ def _install_computer_settings() -> None:
             if player:
                 player.write_log(f"[Settings] volume_set {actual}%")
             return f"Volume set to {actual}%."
+
+        if action == "brightness_set":
+            target = _parse_percent(value)
+            if target is None:
+                target = _parse_percent(description)
+            if target is None:
+                return "Please specify brightness from 0 to 100 percent."
+            if platform.system() == "Windows":
+                actual = _windows_brightness_set(target)
+            else:
+                return original({**params, "action": "brightness_up"}, response=response, player=player, session_memory=session_memory)
+            if player:
+                player.write_log(f"[Settings] laptop_brightness_set {actual}%")
+            return f"Laptop brightness set to {actual}%."
+
+        if not action and description:
+            if any(x in description for x in ("brightness", "screen brightness", "display brightness", "laptop brightness")):
+                target = _parse_percent(description)
+                if target is not None and platform.system() == "Windows":
+                    actual = _windows_brightness_set(target)
+                    return f"Laptop brightness set to {actual}%".
+                if any(x in description for x in ("up", "increase", "raise", "higher", "brighter")):
+                    action = "brightness_up"
+                elif any(x in description for x in ("down", "decrease", "lower", "reduce", "dimmer")):
+                    action = "brightness_down"
+
+        if action in {"brightness_up", "brightness_increase"}:
+            if platform.system() == "Windows":
+                actual = _windows_brightness_step(+10)
+                return f"Laptop brightness increased to {actual}%."
+            return original({**params, "action": "brightness_up"}, response=response, player=player, session_memory=session_memory)
+
+        if action in {"brightness_down", "brightness_decrease"}:
+            if platform.system() == "Windows":
+                actual = _windows_brightness_step(-10)
+                return f"Laptop brightness decreased to {actual}%."
+            return original({**params, "action": "brightness_down"}, response=response, player=player, session_memory=session_memory)
 
         if not action and description:
             if "unmute" in description or "sound on" in description or "audio on" in description:
@@ -139,7 +231,7 @@ def _install_computer_settings() -> None:
 
 
 def _install_pinchtab_browser_routing() -> None:
-    """Patch browser_control so supported actions prefer PinchTab at runtime."""
+    """PinchTab is opt-in; normal browser actions use system default browser."""
     try:
         import actions.browser_control as bc
         from actions import pinchtab_client as pt
@@ -147,6 +239,11 @@ def _install_pinchtab_browser_routing() -> None:
         return
 
     original = bc.browser_control
+    backend = os.environ.get("BRAHMA_BROWSER_BACKEND", "system").strip().lower()
+    if backend != "pinchtab":
+        print("[Browser] System default browser mode active (PinchTab opt-in).")
+        return
+
     supported = {
         "go_to", "navigate", "tabs", "list_tabs", "snapshot", "get_text",
         "click", "fill", "press", "screenshot", "server_start", "health"
@@ -164,7 +261,7 @@ def _install_pinchtab_browser_routing() -> None:
                     print(f"[PinchTab] primary browser action: {action}")
                 return result
             except Exception as exc:
-                msg = f"[PinchTab] unavailable for {action}: {exc}; using Playwright fallback."
+                msg = f"[PinchTab] unavailable for {action}: {exc}; using system browser fallback."
                 if player:
                     player.write_log(msg)
                 else:

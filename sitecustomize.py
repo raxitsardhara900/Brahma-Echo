@@ -453,7 +453,7 @@ def _install_local_laptop_routing():
                     + quote_plus(query)
                 )
 
-                webbrowser.open(url, new=2)
+                _brahma_open_default_browser_once(url)
 
                 message = (
                     f"Opened search in system default browser: "
@@ -476,7 +476,7 @@ def _install_local_laptop_routing():
                 if not url.startswith(("http://", "https://")):
                     url = "https://" + url
 
-                webbrowser.open(url, new=2)
+                _brahma_open_default_browser_once(url)
 
                 message = (
                     "Opened URL in system default browser: "
@@ -579,3 +579,67 @@ def _install_sbc_brightness_backend():
 
 
 _install_sbc_brightness_backend()
+
+
+
+# BRAHMA_GLOBAL_BROWSER_DEDUP_V1
+# ------------------------------------------------------------
+# Prevent duplicate default-browser tabs for ANY URL opened by
+# Brahma during the current Brahma process/session.
+# ------------------------------------------------------------
+
+_BRAHMA_OPENED_DEFAULT_BROWSER_URLS = set()
+
+def _brahma_normalize_browser_url(url: str) -> str:
+    value = str(url or "").strip()
+
+    if not value:
+        return ""
+
+    if not value.startswith(("http://", "https://")):
+        value = "https://" + value
+
+    return value.rstrip("/").lower()
+
+
+def _brahma_open_default_browser_once(url: str) -> bool:
+    import webbrowser
+
+    normalized = _brahma_normalize_browser_url(url)
+
+    if not normalized:
+        return False
+
+    if normalized in _BRAHMA_OPENED_DEFAULT_BROWSER_URLS:
+        print(
+            f"[Browser] Duplicate prevented: {url}"
+        )
+        return False
+
+    _BRAHMA_OPENED_DEFAULT_BROWSER_URLS.add(
+        normalized
+    )
+
+    try:
+        # new=0 asks the OS/default browser to reuse the
+        # existing browser window/session when possible.
+        webbrowser.open(url, new=0)
+
+        print(
+            f"[Browser] Opened in default browser: {url}"
+        )
+
+        return True
+
+    except Exception as exc:
+        # Do not permanently block retry after a failed launch.
+        _BRAHMA_OPENED_DEFAULT_BROWSER_URLS.discard(
+            normalized
+        )
+
+        print(
+            f"[Browser] Default browser open failed: {exc}"
+        )
+
+        return False
+

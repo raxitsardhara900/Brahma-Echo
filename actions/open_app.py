@@ -7,6 +7,7 @@ import platform
 import shutil
 import re
 import webbrowser
+import os
 
 try:
     import psutil
@@ -39,7 +40,7 @@ _APP_ALIASES = {
     "vlc": {"Windows": "vlc", "Darwin": "VLC", "Linux": "vlc"},
     "zoom": {"Windows": "Zoom", "Darwin": "zoom.us", "Linux": "zoom"},
     "slack": {"Windows": "Slack", "Darwin": "Slack", "Linux": "slack"},
-    "steam": {"Windows": "steam", "Darwin": "Steam", "Linux": "steam"},
+    "steam": {"Windows": "steam", "Darwin": "steam", "Linux": "steam"},
     "task manager": {"Windows": "taskmgr.exe", "Darwin": "Activity Monitor", "Linux": "gnome-system-monitor"},
     "settings": {"Windows": "ms-settings:", "Darwin": "System Preferences", "Linux": "gnome-control-center"},
     "powershell": {"Windows": "powershell.exe", "Darwin": "Terminal", "Linux": "bash"},
@@ -110,6 +111,20 @@ def _open_in_default_browser(raw: str, player=None) -> str | None:
     url = _website_url(raw)
     if not url:
         return None
+
+    # Windows: os.startfile(url) delegates to the user's actual default URL
+    # handler. This is more deterministic than webbrowser.open() when an
+    # embedded/registered browser handler is present.
+    if platform.system() == "Windows":
+        try:
+            os.startfile(url)
+            print(f"[Browser] Opened in system default browser: {url}")
+            if player:
+                player.write_log(f"[Browser] Opened in system default browser: {url}")
+            return f"Opened {raw} in the system default browser."
+        except Exception as exc:
+            print(f"[Browser] Windows default handler failed for {raw}: {exc}")
+
     try:
         opened = webbrowser.open(url, new=0, autoraise=True)
         if opened:
@@ -180,8 +195,6 @@ def open_app(parameters=None, response=None, player=None, session_memory=None) -
     if not app_name:
         return "Please specify which application to open, sir."
 
-    # Website requests always use the operating-system default browser.
-    # Browser automation/session reuse is handled separately by browser_control.
     website_result = _open_in_default_browser(app_name, player=player)
     if website_result is not None:
         return website_result
